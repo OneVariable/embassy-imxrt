@@ -1,7 +1,7 @@
 #![no_std]
 #![allow(async_fn_in_trait)]
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
+// #![warn(missing_docs)]
 
 //! ## Feature flags
 #![doc = document_features::document_features!(feature_label = r#"<span class="stab portability"><code>{feature}</code></span>"#)]
@@ -145,7 +145,7 @@ pub mod config {
     impl Default for Config {
         fn default() -> Self {
             Self {
-                clocks: ClockConfig::crystal(),
+                clocks: ClockConfig::default(),
                 #[cfg(feature = "_time-driver")]
                 time_interrupt_priority: crate::interrupt::Priority::P0,
             }

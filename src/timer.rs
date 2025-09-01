@@ -7,9 +7,8 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
 
-use crate::clocks::{enable_and_reset, ClockConfig, ConfigurableClock};
+use crate::clocks::{clock_freq, enable_and_reset, SysconPeripheral};
 use crate::iopctl::{DriveMode, DriveStrength, Inverter, IopctlPin as Pin, Pull, SlewRate};
-use crate::pac::clkctl1::ct32bitfclksel::Sel;
 use crate::pac::Clkctl1;
 use crate::pwm::{CentiPercent, Hertz, MicroSeconds};
 use crate::{interrupt, peripherals, Peri, PeripheralType};
@@ -170,6 +169,7 @@ struct Info {
 unsafe impl Send for Info {}
 
 trait SealedInstance {
+    type AssociatedSysconPeripheral: SysconPeripheral;
     fn info() -> Info;
 }
 trait InterruptHandler {
@@ -357,33 +357,7 @@ impl Info {
     }
 
     fn pwm_get_clock_freq(&self) -> u32 {
-        // SAFETY: This has no safety impact as we are getting a singleton register instance here and its dropped it the end of the function
-        let reg = unsafe { Clkctl1::steal() };
-
-        let clksel = reg.ct32bitfclksel(self.channel).read().sel().variant();
-        let mut freq: u32 = 0;
-
-        if let Some(clk) = clksel {
-            match clk {
-                Sel::MainClk => {
-                    freq = ClockConfig::crystal().main_clk.get_clock_rate().unwrap();
-                }
-                Sel::SfroClk => {
-                    freq = ClockConfig::crystal().sfro.get_clock_rate().unwrap();
-                }
-                Sel::FfroClk => {
-                    freq = ClockConfig::crystal().ffro.get_clock_rate().unwrap();
-                }
-                Sel::Lposc => {
-                    freq = ClockConfig::crystal().lposc.get_clock_rate().unwrap();
-                }
-                //TODO: Add get clock frequency for clock sources audio pll, mclk_in
-                _ => {
-                    freq = 0;
-                }
-            }
-        }
-        freq
+        todo!()
     }
 
     fn pwm_configure(&self, period: u32) {
@@ -417,6 +391,8 @@ macro_rules! impl_instance {
     ($n:expr, $channel:expr) => {
         paste! {
             impl SealedInstance for crate::peripherals::[<CTIMER $n _ COUNT _ CHANNEL $channel>] {
+                type AssociatedSysconPeripheral = crate::peripherals::[<CTIMER $n _ COUNT _ CHANNEL0>];
+
                 fn info() -> Info {
                     //SAFETY - This code is safe as we are getting register block pointer to do configuration
                     Info {
@@ -428,6 +404,8 @@ macro_rules! impl_instance {
                 }
             }
             impl SealedInstance for crate::peripherals::[<CTIMER $n _ CAPTURE _ CHANNEL $channel>] {
+                type AssociatedSysconPeripheral = crate::peripherals::[<CTIMER $n _ COUNT _ CHANNEL0>];
+
                 fn info() -> Info {
                     Info {
                         regs: unsafe { &*crate::pac::[<Ctimer $n>]::ptr() },
@@ -568,14 +546,14 @@ impl<M: Mode, P: CaptureEvent> CaptureTimer<'_, M, P> {
 
 impl<'p, P: CaptureEvent> CaptureTimer<'p, Async, P> {
     /// Creates a new `CaptureTimer` in asynchronous mode.
-    pub fn new_async<T: Instance>(_inst: Peri<'p, T>, pin: Peri<'p, P>, clk: impl ConfigurableClock) -> Self {
+    pub fn new_async<T: Instance>(_inst: Peri<'p, T>, pin: Peri<'p, P>) -> Self {
         let info = T::info();
         let module = info.module;
         T::interrupt_enable();
         Self {
             id: COUNT_CHANNEL + module * CHANNEL_PER_MODULE + info.channel,
             event_clock_counts: 0,
-            clk_freq: clk.get_clock_rate().unwrap(),
+            clk_freq: clock_freq::<T::AssociatedSysconPeripheral>(),
             _phantom: core::marker::PhantomData,
             info,
             event_pin: pin,
@@ -651,14 +629,14 @@ impl<'p, P: CaptureEvent> CaptureTimer<'p, Async, P> {
 
 impl<'p, P: CaptureEvent> CaptureTimer<'p, Blocking, P> {
     /// Creates a new `CaptureTimer` in blocking mode.
-    pub fn new_blocking<T: Instance>(_inst: Peri<'p, T>, pin: Peri<'p, P>, clk: impl ConfigurableClock) -> Self {
+    pub fn new_blocking<T: Instance>(_inst: Peri<'p, T>, pin: Peri<'p, P>) -> Self {
         let info = T::info();
         let module = info.module;
         T::interrupt_enable();
         Self {
             id: COUNT_CHANNEL + module * CHANNEL_PER_MODULE + info.channel,
             event_clock_counts: 0,
-            clk_freq: clk.get_clock_rate().unwrap(),
+            clk_freq: clock_freq::<T::AssociatedSysconPeripheral>(),
             _phantom: core::marker::PhantomData,
             info,
             event_pin: pin,
@@ -761,12 +739,12 @@ impl<M: Mode> CountingTimer<M> {
 
 impl CountingTimer<Async> {
     /// Creates a new `CountingTimer` in asynchronous mode.
-    pub fn new_async<T: Instance>(_inst: Peri<'_, T>, clk: impl ConfigurableClock) -> Self {
+    pub fn new_async<T: Instance>(_inst: Peri<'_, T>) -> Self {
         let info = T::info();
         T::interrupt_enable();
         Self {
             id: info.module * CHANNEL_PER_MODULE + info.channel,
-            clk_freq: clk.get_clock_rate().unwrap(),
+            clk_freq: clock_freq::<T::AssociatedSysconPeripheral>(),
             timeout: 0,
             _phantom: core::marker::PhantomData,
             info,
@@ -792,12 +770,12 @@ impl CountingTimer<Async> {
 
 impl CountingTimer<Blocking> {
     /// Creates a new `CountingTimer` in blocking mode.
-    pub fn new_blocking<T: Instance>(_inst: Peri<'_, T>, clk: impl ConfigurableClock) -> Self {
+    pub fn new_blocking<T: Instance>(_inst: Peri<'_, T>) -> Self {
         let info = T::info();
         T::interrupt_enable();
         Self {
             id: info.module * CHANNEL_PER_MODULE + info.channel,
-            clk_freq: clk.get_clock_rate().unwrap(),
+            clk_freq: clock_freq::<T::AssociatedSysconPeripheral>(),
             timeout: 0,
             _phantom: core::marker::PhantomData,
             info,
