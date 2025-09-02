@@ -106,10 +106,10 @@ pub struct MainPll {
     ///
     /// Allowed range: `1..=256`.
     pub dsp_pll_clock_divider: u16,
-    /// Clock divider for the `aux_pll_clk`.
+    /// Clock divider for the `aux0_pll_clk`.
     ///
     /// Allowed range: `1..=256`.
-    pub aux_pll_clock_divider: u16,
+    pub aux0_pll_clock_divider: u16,
     /// Clock divider for the `aux1_pll_clk`.
     ///
     /// Allowed range: `1..=256`.
@@ -262,6 +262,24 @@ pub(crate) unsafe fn init(config: ClockConfig) -> Result<(), ClockError> {
     clocks._32k_wake_clk.enabled = !config._32k_wake_clk_select.is_off();
 
     if let Some(main_pll) = config.main_pll {
+        assert!(
+            (16..=22).contains(&main_pll.multiplier),
+            "main pll multiplier out of allowed range"
+        );
+
+        let pll_input_freq = match main_pll.clock_select {
+            MainPllClockSelect::_16mIrc => clocks
+                ._16m_irc
+                .as_option()
+                .expect("`_16m_irc` is not enabled, but the main PLL wants to use it"),
+            MainPllClockSelect::ClkIn => clocks
+                .clk_in
+                .expect("`clk_in` is not enabled, but the main PLL wants to use it"),
+            MainPllClockSelect::_48_60MIrcDiv2 => clocks
+                ._48_60m_irc
+                .expect("`_48_60m_irc` is not enabled, but the main PLL wants to use it"),
+        };
+
         // Turn off the PLL if it was running
         sysctl0.pdruncfg0_set().write(|w| {
             w.syspllldo_pd().set_pdruncfg0();
@@ -279,10 +297,6 @@ pub(crate) unsafe fn init(config: ClockConfig) -> Result<(), ClockError> {
         clkctl0.syspll0num().write(|w| unsafe { w.num().bits(0x0) });
         clkctl0.syspll0denom().write(|w| unsafe { w.denom().bits(0x1) });
 
-        assert!(
-            (16..=22).contains(&main_pll.multiplier),
-            "main pll multiplier out of allowed range"
-        );
         clkctl0.syspll0ctl0().write(|w| {
             // No bypass. We're using the PFD.
             w.bypass().programmed_clk();
@@ -310,7 +324,151 @@ pub(crate) unsafe fn init(config: ClockConfig) -> Result<(), ClockError> {
         clkctl0.syspll0ctl0().modify(|_, w| w.holdringoff_ena().dsiable());
         cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * lock_time_div_2 as u32);
 
-        // TODO: More asserts, PFDs and setting the values in the clocks struct
+        // Output freq is just input times multiplier because the fractional part is hardcoded at 0
+        let pll_output_freq = pll_input_freq * main_pll.multiplier as u32;
+
+        // Main PLL is ready
+        // Now we do the downstream PFDs
+
+        // PFD0
+        if let Some(div) = main_pll.pfd0_div {
+            assert!((12..=35).contains(&div), "`pfd0_div` is out of the allowed range");
+
+            clkctl0.syspll0pfd().modify(|_, w| {
+                w.pfd0().bits(div);
+                w.pfd0_clkrdy().set_bit();
+                w.pfd0_clkgate().not_gated();
+                w
+            });
+            while clkctl0.syspll0pfd().read().pfd0_clkrdy().bit_is_clear() {}
+
+            let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
+
+            assert!(
+                (1..=256).contains(&main_pll.main_pll_clock_divider),
+                "`main_pll_clock_divider` is out of the allowed range"
+            );
+
+            // Halt and reset the div
+            clkctl0.mainpllclkdiv().write(|w| w.halt().set_bit());
+            clkctl0.mainpllclkdiv().write(|w| {
+                w.div()
+                    .bits((main_pll.main_pll_clock_divider - 1) as u8)
+                    .reset()
+                    .set_bit()
+            });
+            while clkctl0.mainpllclkdiv().read().reqflag().bit_is_set() {}
+
+            clocks.main_pll_clk = Some(pfd_freq / (main_pll.main_pll_clock_divider - 1) as u32);
+        } else {
+            clkctl0.mainpllclkdiv().write(|w| w.halt().set_bit());
+            clkctl0.syspll0pfd().modify(|_, w| w.pfd0_clkgate().gated());
+        }
+
+        // PFD1
+        if let Some(div) = main_pll.pfd1_div {
+            assert!((12..=35).contains(&div), "`pfd1_div` is out of the allowed range");
+
+            clkctl0.syspll0pfd().modify(|_, w| {
+                w.pfd1().bits(div);
+                w.pfd1_clkrdy().set_bit();
+                w.pfd1_clkgate().not_gated();
+                w
+            });
+            while clkctl0.syspll0pfd().read().pfd1_clkrdy().bit_is_clear() {}
+
+            let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
+
+            assert!(
+                (1..=256).contains(&main_pll.dsp_pll_clock_divider),
+                "`dsp_pll_clock_divider` is out of the allowed range"
+            );
+
+            // Halt and reset the div
+            clkctl0.dsppllclkdiv().write(|w| w.halt().set_bit());
+            clkctl0.dsppllclkdiv().write(|w| {
+                w.div()
+                    .bits((main_pll.dsp_pll_clock_divider - 1) as u8)
+                    .reset()
+                    .set_bit()
+            });
+            while clkctl0.dsppllclkdiv().read().reqflag().bit_is_set() {}
+
+            clocks.dsp_pll_clk = Some(pfd_freq / (main_pll.dsp_pll_clock_divider - 1) as u32);
+        } else {
+            clkctl0.dsppllclkdiv().write(|w| w.halt().set_bit());
+            clkctl0.syspll0pfd().modify(|_, w| w.pfd1_clkgate().gated());
+        }
+
+        // PFD2
+        if let Some(div) = main_pll.pfd2_div {
+            assert!((12..=35).contains(&div), "`pfd2_div` is out of the allowed range");
+
+            clkctl0.syspll0pfd().modify(|_, w| {
+                w.pfd2().bits(div);
+                w.pfd2_clkrdy().set_bit();
+                w.pfd2_clkgate().not_gated();
+                w
+            });
+            while clkctl0.syspll0pfd().read().pfd2_clkrdy().bit_is_clear() {}
+
+            let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
+
+            assert!(
+                (1..=256).contains(&main_pll.aux0_pll_clock_divider),
+                "`aux0_pll_clock_divider` is out of the allowed range"
+            );
+
+            // Halt and reset the div
+            clkctl0.aux0pllclkdiv().write(|w| w.halt().set_bit());
+            clkctl0.aux0pllclkdiv().write(|w| {
+                w.div()
+                    .bits((main_pll.aux0_pll_clock_divider - 1) as u8)
+                    .reset()
+                    .set_bit()
+            });
+            while clkctl0.aux0pllclkdiv().read().reqflag().bit_is_set() {}
+
+            clocks.aux0_pll_clk = Some(pfd_freq / (main_pll.aux0_pll_clock_divider - 1) as u32);
+        } else {
+            clkctl0.aux0pllclkdiv().write(|w| w.halt().set_bit());
+            clkctl0.syspll0pfd().modify(|_, w| w.pfd2_clkgate().gated());
+        }
+
+        // PFD3
+        if let Some(div) = main_pll.pfd3_div {
+            assert!((12..=35).contains(&div), "`pfd3_div` is out of the allowed range");
+
+            clkctl0.syspll0pfd().modify(|_, w| {
+                w.pfd3().bits(div);
+                w.pfd3_clkrdy().set_bit();
+                w.pfd3_clkgate().not_gated();
+                w
+            });
+            while clkctl0.syspll0pfd().read().pfd3_clkrdy().bit_is_clear() {}
+
+            let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
+
+            assert!(
+                (1..=256).contains(&main_pll.aux1_pll_clock_divider),
+                "`aux1_pll_clock_divider` is out of the allowed range"
+            );
+
+            // Halt and reset the div
+            clkctl0.aux1pllclkdiv().write(|w| w.halt().set_bit());
+            clkctl0.aux1pllclkdiv().write(|w| {
+                w.div()
+                    .bits((main_pll.aux1_pll_clock_divider - 1) as u8)
+                    .reset()
+                    .set_bit()
+            });
+            while clkctl0.aux1pllclkdiv().read().reqflag().bit_is_set() {}
+
+            clocks.aux1_pll_clk = Some(pfd_freq / (main_pll.aux1_pll_clock_divider - 1) as u32);
+        } else {
+            clkctl0.aux1pllclkdiv().write(|w| w.halt().set_bit());
+            clkctl0.syspll0pfd().modify(|_, w| w.pfd3_clkgate().gated());
+        }
     } else {
         // Turn off the PLL if it was running
         sysctl0.pdruncfg0_set().write(|w| {
