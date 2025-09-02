@@ -4,6 +4,9 @@ use crate::iopctl::IopctlPin;
 use crate::pac;
 use crate::peripherals::{PIO0_25, PIO2_15, PIO2_30};
 
+/// Max cpu freq is 300mhz, so that's 300 clock ticks per micro second
+const WORST_CASE_TICKS_PER_US: u32 = 300;
+
 #[derive(Debug, Clone, Default)]
 pub struct Clocks {
     pub _1m_lposc: StaticClock<1_000_000>,
@@ -55,6 +58,7 @@ pub struct ClockConfig {
     pub _48_60m_irc_select: _48_60mIrcSelect,
     pub _32k_wake_clk_select: _32kWakeClkSelect,
     pub clk_in_select: ClkInSelect,
+    pub main_pll: Option<MainPll>,
     pub main_clock_select: MainClockSelect,
 }
 
@@ -62,6 +66,61 @@ impl Default for ClockConfig {
     fn default() -> Self {
         todo!()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MainPll {
+    /// Select the used clock input
+    pub clock_select: MainPllClockSelect,
+    /// Allowed range: 16..=22
+    pub multiplier: u8,
+    /// PFD that feeds the `main_pll_clk`.
+    /// If None, the pfd is gated and the clock will not be active.
+    ///
+    /// Allowed range: `12..=35`.
+    /// Applied multiplier = `18/div`.
+    pub pfd0_div: Option<u8>,
+    /// PFD that feeds the `dsp_pll_clk`.
+    /// If None, the pfd is gated and the clock will not be active.
+    ///
+    /// Allowed range: `12..=35`.
+    /// Applied multiplier = `18/div`.
+    pub pfd1_div: Option<u8>,
+    /// PFD that feeds the `aux0_pll_clk`.
+    /// If None, the pfd is gated and the clock will not be active.
+    ///
+    /// Allowed range: `12..=35`.
+    /// Applied multiplier = `18/div`.
+    pub pfd2_div: Option<u8>,
+    /// PFD that feeds the `aux1_pll_clk`.
+    /// If None, the pfd is gated and the clock will not be active.
+    ///
+    /// Allowed range: `12..=35`.
+    /// Applied multiplier = `18/div`.
+    pub pfd3_div: Option<u8>,
+    /// Clock divider for the `main_pll_clk`.
+    ///
+    /// Allowed range: `1..=256`.
+    pub main_pll_clock_divider: u16,
+    /// Clock divider for the `dsp_pll_clk`.
+    ///
+    /// Allowed range: `1..=256`.
+    pub dsp_pll_clock_divider: u16,
+    /// Clock divider for the `aux_pll_clk`.
+    ///
+    /// Allowed range: `1..=256`.
+    pub aux_pll_clock_divider: u16,
+    /// Clock divider for the `aux1_pll_clk`.
+    ///
+    /// Allowed range: `1..=256`.
+    pub aux1_pll_clock_divider: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MainPllClockSelect {
+    _16mIrc = 0b000,
+    ClkIn = 0b001,
+    _48_60MIrcDiv2 = 0b010,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -186,9 +245,9 @@ pub(crate) unsafe fn init(config: ClockConfig) -> Result<(), ClockError> {
 
     // Optionally enable the 16m_irc, 48/60m_irc, 1m_lposc & lp_32k
     sysctl0.pdruncfg0().modify(|_, w| {
-        w.sfro_pd().bit(config.enable_16m_irc);
-        w.lposc_pd().bit(config.enable_1m_lposc);
-        w.ffro_pd().bit(!config._48_60m_irc_select.is_off());
+        w.sfro_pd().bit(!config.enable_16m_irc);
+        w.lposc_pd().bit(!config.enable_1m_lposc);
+        w.ffro_pd().bit(config._48_60m_irc_select.is_off());
         w
     });
     clocks._16m_irc.enabled = config.enable_16m_irc;
@@ -201,6 +260,67 @@ pub(crate) unsafe fn init(config: ClockConfig) -> Result<(), ClockError> {
         .wakeclk32khzsel()
         .write(|w| w.sel().bits(config._32k_wake_clk_select as u8));
     clocks._32k_wake_clk.enabled = !config._32k_wake_clk_select.is_off();
+
+    if let Some(main_pll) = config.main_pll {
+        // Turn off the PLL if it was running
+        sysctl0.pdruncfg0_set().write(|w| {
+            w.syspllldo_pd().set_pdruncfg0();
+            w.syspllana_pd().set_pdruncfg0();
+            w
+        });
+
+        // Select the clock input we want
+        clkctl0
+            .syspll0clksel()
+            .write(|w| w.sel().bits(main_pll.clock_select as u8));
+
+        // Set the fractional part of the multiplier to 0
+        // This means we're only using the integer multiplier as specified in the config
+        clkctl0.syspll0num().write(|w| unsafe { w.num().bits(0x0) });
+        clkctl0.syspll0denom().write(|w| unsafe { w.denom().bits(0x1) });
+
+        assert!(
+            (16..=22).contains(&main_pll.multiplier),
+            "main pll multiplier out of allowed range"
+        );
+        clkctl0.syspll0ctl0().write(|w| {
+            // No bypass. We're using the PFD.
+            w.bypass().programmed_clk();
+            // Clear the reset because after this we're fully configured
+            w.reset().normal();
+            // Set the user provided multiplier
+            w.mult().bits(main_pll.multiplier);
+            // For the first period we need the HOLDRINGOFF_ENA on
+            w.holdringoff_ena().enable();
+            w
+        });
+
+        // Turn on the PLL
+        sysctl0.pdruncfg0_clr().write(|w| {
+            w.syspllldo_pd().clr_pdruncfg0();
+            w.syspllana_pd().clr_pdruncfg0();
+            w
+        });
+
+        // Get the amount of us we need to wait
+        let lock_time_div_2 = clkctl0.syspll0locktimediv2().read().locktimediv2().bits();
+        cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * lock_time_div_2 as u32);
+
+        // For the second period we need the HOLDRINGOFF_ENA off
+        clkctl0.syspll0ctl0().modify(|_, w| w.holdringoff_ena().dsiable());
+        cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * lock_time_div_2 as u32);
+
+        // TODO: More asserts, PFDs and setting the values in the clocks struct
+    } else {
+        // Turn off the PLL if it was running
+        sysctl0.pdruncfg0_set().write(|w| {
+            w.syspllldo_pd().set_pdruncfg0();
+            w.syspllana_pd().set_pdruncfg0();
+            w
+        });
+
+        clkctl0.syspll0clksel().write(|w| w.sel().none());
+    }
 
     // Select the main clock
     clkctl0
@@ -231,7 +351,7 @@ pub(crate) unsafe fn init(config: ClockConfig) -> Result<(), ClockError> {
             .expect("Main clock uses _16m_irc, but _16m_irc is not active"),
         MainClockSelect::MainPllClk => clocks
             .main_pll_clk
-            .expect("Main clock uses clkmain_pll_clk_in, but main_pll_clk is not active"),
+            .expect("Main clock uses main_pll_clk, but main_pll_clk is not active"),
         MainClockSelect::_32kClk => clocks
             ._32k_clk
             .as_option()
