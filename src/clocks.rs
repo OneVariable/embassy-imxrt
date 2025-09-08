@@ -886,7 +886,6 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10);
 //
 // -----
 //
-//
 //                                          16m_clk_irc ┌─────┐
 //                                           ──────────▶│000  │
 //                                           48/60m_irc │     │
@@ -908,7 +907,6 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10);
 //       FRG14CLKSEL[2:0]
 //
 // -----
-//
 //
 //                                          16m_clk_irc ┌─────┐
 //                                           ──────────▶│000  │
