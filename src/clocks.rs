@@ -20,6 +20,7 @@ pub struct Clocks {
     pub clk_in: Option<u32>,
     pub dsp_main_clk: Option<u32>,
     pub dsp_pll_clk: Option<u32>,
+    // TODO(AJM): This is actually n=0..=7
     pub frg_clk_n: Option<u32>,
     pub frg_clk_14: Option<u32>,
     pub frg_clk_15: Option<u32>,
@@ -68,6 +69,40 @@ impl Default for ClockConfig {
     }
 }
 
+/// ```text
+/// ┌────────────────────────────────────────────────────────────────────────────────────────┐
+/// │                                                                                        │
+/// │                                                          ┌─────────────┐               │
+/// │                                                          │Main PLL     │  main_pll_clk │
+/// │                                                   ┌─────▶│Clock Divider│ ────────────▶ │
+/// │                                                   │      └─────────────┘               │
+/// │                                                   │             ▲                      │
+/// │                                                   │             │                      │
+/// │                                                   │       MAINPLLCLKDIV                │
+/// │                                                   │      ┌─────────────┐               │
+/// │                                                   │      │DSP PLL      │   dsp_pll_clk │
+/// │                                                   │ ┌───▶│Clock Divider│ ────────────▶ │
+/// │                                                   │ │    └─────────────┘               │
+/// │                     ┌─────┐       ┌────────────┐  │ │           ▲                      │
+/// │         16m_irc ───▶│000  │       │       PFD0 │──┘ │           │                      │
+/// │          clk_in ───▶│001  │       │ Main  PFD1 │────┘     DSPPLLCLKDIV                 │
+/// │ 48/60m_irc_div2 ───▶│010  │──────▶│ PLL   PFD2 │────┐    ┌─────────────┐               │
+/// │          "none" ───▶│111  │       │       PFD3 │───┐│    │AUX0 PLL     │  aux0_pll_clk │
+/// │                     └─────┘       └────────────┘   │└───▶│Clock Divider│ ────────────▶ │
+/// │                        ▲                 ▲         │     └─────────────┘               │
+/// │                        │                 │         │            ▲                      │
+/// │            Sys PLL clock select  Main PLL settings │            │                      │
+/// │             SYSPLL0CLKSEL[2:0]       SYSPLL0xx     │      AUX0PLLCLKDIV                │
+/// │                                                    │     ┌─────────────┐               │
+/// │                                                    │     │AUX1 PLL     │  aux1_pll_clk │
+/// │                                                    └────▶│Clock Divider│ ────────────▶ │
+/// │                                                          └─────────────┘               │
+/// │                                                                 ▲                      │
+/// │                                                                 │                      │
+/// │                                                           AUX1PLLCLKDIV                │
+/// │                                                                                        │
+/// └────────────────────────────────────────────────────────────────────────────────────────┘
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MainPll {
     /// Select the used clock input
@@ -116,6 +151,18 @@ pub struct MainPll {
     pub aux1_pll_clock_divider: u16,
 }
 
+/// ```text
+///                     ┌─────┐
+///         16m_irc ───▶│000  │
+///          clk_in ───▶│001  │
+/// 48/60m_irc_div2 ───▶│010  │──────▶
+///          "none" ───▶│111  │
+///                     └─────┘
+///                        ▲
+///                        │
+///            Sys PLL clock select
+///             SYSPLL0CLKSEL[2:0]
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MainPllClockSelect {
     _16mIrc = 0b000,
@@ -123,6 +170,18 @@ pub enum MainPllClockSelect {
     _48_60MIrcDiv2 = 0b010,
 }
 
+/// ```text
+/// clkin (selected by IOCON)          ┌───┐ clk_in
+///       ────────────────────────────▶│1  │───────▶
+///                ┌────────────┐  ┌──▶│0  │
+///  xtalin ──────▶│Main crystal│  │   └───┘
+/// xtalout ──────▶│oscillator  │──┘     ▲
+///                └────────────┘        │
+///                       ▲       SYSOSCBYPASS[2:0]
+///                       │
+///                Enable & bypass
+///                SYSOSCCTL0[1:0]
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub enum ClkInSelect {
     Xtal { freq: u32, bypass: bool, low_power: bool },
@@ -131,6 +190,20 @@ pub enum ClkInSelect {
     ClkIn2_30 { freq: u32, pin: PIO2_30 },
 }
 
+/// ```text
+///                      ┌────┐
+///  48/60m_irc_div2 ───▶│00  │
+///           clk_in ───▶│01  │                      ┌────┐
+///         1m_lposc ───▶│10  │─────────────────────▶│00  │
+///       48/60m_irc ───▶│11  │         16m_irc ┌───▶│01  │
+///                      └────┘    ─────────────┘┌──▶│10  │─────▶
+///                         ▲      main_pll_clk  │┌─▶│11  │
+///                         │      ──────────────┘│  └────┘
+///           Main clock select A       32k_clk   │     ▲
+///            MAINCLKSELA[1:0]    ───────────────┘     │
+///                                       Main clock select B
+///                                        MAINCLKSELB[1:0]
+/// ```
 // Top 2 bits = MAINCLKSELA
 // Bottom 2 bits = MAINCLKSELB
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +217,16 @@ pub enum MainClockSelect {
     _32kClk = 0b0011,
 }
 
+/// ```text
+///  ┌──────────┐                              48/60m_irc
+///  │48/60 MHz │─┬──────────────────────────────────────▶
+///  │Oscillator│ │ ┌───────────┐         48/60m_irc_div2
+///  └──────────┘ └▶│Divide by 2│────────────────────────▶
+///        ▲        └───────────┘         48/60m_irc_div4
+///        │              │ ┌───────────┐ ┌──────────────▶
+/// PDRUNCFG0[15],        └▶│Divide by 2│─┘
+/// PDSLEEPCFG0[15]         └───────────┘
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum _48_60mIrcSelect {
     Off,
@@ -169,6 +252,20 @@ impl _48_60mIrcSelect {
     }
 }
 
+/// ```text
+///                                                    1m_lposc
+///                   ┌─────────────────────────────────────────▶
+///                   │           32k_clk
+///                   │           ───────┐
+///  ┌──────────┐     │   ┌─────────┐    │  ┌─────┐
+///  │1 MHz low │     │   │divide by│    └─▶│000  │ 32k_wake_clk
+///  │power osc.│─────┴──▶│   32    │ ─────▶│001  │─────────────▶
+///  └──────────┘         └─────────┘    ┌─▶│111  │
+///        ▲                      "none" │  └─────┘
+///        │                      ───────┘     ▲
+/// PDRUNCFG0[14],                             │
+/// PDSLEEPCFG0[14]                  WAKECLK32KHZSEL[2:0]
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum _32kWakeClkSelect {
     Off = 0b111,
@@ -665,3 +762,474 @@ impl_perph_clk!(USDHC1, Clkctl0, pscctl1, Rstctl0, prstctl1, 3);
 impl_perph_clk!(UTICK0, Clkctl0, pscctl2, Rstctl0, prstctl2, 0);
 impl_perph_clk!(WDT0, Clkctl0, pscctl2, Rstctl0, prstctl2, 1);
 impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10);
+
+// Diagrams without homes (yet)
+//
+// -----
+//
+//             ┌───────────┐
+//  rtcxin ───▶│RTC crystal│ 32k_clk
+// rtcxout ───▶│oscillator │─────────▶
+//             └───────────┘
+//                   ▲
+//                   │
+//                Enable
+//            OSC23KHZCTL0[0]
+//
+// -----
+//
+//  ┌──────────┐
+//  │16 MHz    │ 16m_irc
+//  │oscillator│────────▶
+//  └──────────┘
+//        ▲
+//        │
+// PDRUNCFG0[14],
+// PDSLEEPCFG0[14]
+//
+// -----
+//
+//                     ┌─────┐       ┌────────────┐
+//         16m_irc ───▶│000  │       │            │      ┌─────────────┐
+//          clk_in ───▶│001  │       │ Audio      │      │Main PLL     │  main_pll_clk
+// 48/60m_irc_div2 ───▶│010  │──────▶│ PLL   PFD0 │─────▶│Clock Divider│ ────────────▶
+//          "none" ───▶│111  │       │            │      └─────────────┘
+//                     └─────┘       └────────────┘             ▲
+//                        ▲                 ▲                   │
+//                        │                 │             MAINPLLCLKDIV
+//          Audio PLL clock select  Audio PLL settings
+//           AUDIOPLL0CLKSEL[2:0]        SYSPLL0xx
+//
+// -----
+//
+// (first half partially used above)
+//
+//                                                               ┌─────────┐
+//                                                               │CPU Clock│  to CPU, AHB, APB, etc.
+//                                                          ┌───▶│Divider  │──────────────────────────────────────▶
+//                                                          │    └─────────┘           hclk
+//                     ┌────┐                               │         ▲
+// 48/60m_irc_div2 ───▶│00  │                               │         │
+//          clk_in ───▶│01  │                      ┌────┐   │  SYSCPUAHBCLKDIV
+//        1m_lposc ───▶│10  │─────────────────────▶│00  │   │  ┌─────────────┐
+//      48/60m_irc ───▶│11  │         16m_irc ┌───▶│01  │   │  │ARM Trace    │ to ARM Trace function clock
+//                     └────┘    ─────────────┘┌──▶│10  │───┼─▶│Clock Divider│────────────────────────────────────▶
+//                        ▲      main_pll_clk  │┌─▶│11  │   │  └─────────────┘
+//                        │      ──────────────┘│  └────┘   │         ▲
+//          Main clock select A       32k_clk   │     ▲     │         │
+//           MAINCLKSELA[1:0]    ───────────────┘     │     │      PFC0DIV
+//                                      Main clock select B │  ┌─────────────┐
+//                                       MAINCLKSELB[1:0]   │  │Systick Clock│                ┌─────┐
+//                                                          ├─▶│Divider      │───────────────▶│000  │
+//                                                          │  └─────────────┘   1m_lposc┌───▶│001  │  to Systick
+//                                                          │         ▲          ────────┘┌──▶│010  │─────────────▶
+//                                                          │         │           32k_clk │┌─▶│011  │function clock
+//                                                          │  SYSTICKFCLKDIV    ─────────┘│┌▶│111  │
+//                                                          │                     16m_irc  ││ └─────┘
+//                                                          ▼                    ──────────┘│    ▲
+//                                                      main_clk                   "none"   │    │
+//                                                                               ───────────┘    │
+//                                                                                               │
+//                                                                               SYSTICKFCLKSEL[2:0]
+//
+// -----
+//
+//                ┌────┐
+// 48/60m_irc ───▶│00  │
+//     clk_in ───▶│01  │                      ┌────┐
+//   1m_lposc ───▶│10  │─────────────────────▶│00  │      ┌─────────┐
+//    16m_irc ───▶│11  │    main_pll_clk ┌───▶│01  │      │DSP Clock│                       to DSP CPU
+//                └────┘    ─────────────┘┌──▶│10  │───┬─▶│Divider  │──┬──────────────────────────────▶
+//                   ▲       dsp_pll_clk  │┌─▶│11  │   │  └─────────┘  │  ┌─────────────┐
+//                   │      ──────────────┘│  └────┘   │       ▲       │  │DSP RAM      │   to DSP RAM
+//     DSP clock select A        32k_clk   │     ▲     │       │       └─▶│Clock Divider│─────────────▶
+//     DSPCPUCLKSELA[1:0]   ───────────────┘     │     │ DSPCPUCLKDIV     └─────────────┘   interface
+//                                 DSP clock select B  │                        ▲
+//                                 DSPCPUCLKSELB[1:0]  │                        │
+//                                                     ▼                DSPMAINRAMCLKDIV
+//                                             dsp_main_clk (to
+//                                             CLKOUT 0 select)
+//
+// -----
+//
+//               ┌────────────────┐
+// main_pll_clk  │PLL to Flexcomm │ frg_pll
+// ─────────────▶│FRG Divider     │────────▶
+//               └────────────────┘
+//                        ▲
+//                        │
+//                  FRGPLLCLKDIV
+//
+// -----
+//
+// 1 per Flexcomm interface (n = 0 through 7)
+//
+//                                          16m_clk_irc ┌─────┐
+//                                           ──────────▶│000  │
+//                                           48/60m_irc │     │
+//                                           ──────────▶│001  │
+//   main_clk ┌─────┐                     audio_pll_clk │     │
+// ──────────▶│000  │                        ──────────▶│010  │ function clock
+//    frg_pll │     │                           mclk_in │     │────────────────▶
+// ──────────▶│001  │     ┌───────────────┐  ──────────▶│011  │  of Flexcomm n
+//    16m_irc │     │     │Fractional Rate│   frg_clk n │     │
+// ──────────▶│010  │────▶│Divider (FRG)  │────────────▶│100  │
+// 48/60m_irc │     │     └───────────────┘       "none"│     │
+// ──────────▶│011  │             ▲          ──────────▶│111  │
+//     "none" │     │             │                     └─────┘
+// ──────────▶│111  │       FRGnCTL[15:0]                  ▲
+//            └─────┘                                      │
+//               ▲                             Flexcomm n clock select
+//               │                                 FCnFCLKSEL[2:0]
+//       FRG clock select n
+//        FRGnCLKSEL[2:0]
+//
+// -----
+//
+//
+//                                          16m_clk_irc ┌─────┐
+//                                           ──────────▶│000  │
+//                                           48/60m_irc │     │
+//                                           ──────────▶│001  │
+//   main_clk ┌─────┐                     audio_pll_clk │     │
+// ──────────▶│000  │                        ──────────▶│010  │ function clock
+//    frg_pll │     │                           mclk_in │     │────────────────▶
+// ──────────▶│001  │     ┌───────────────┐  ──────────▶│011  │    of HS SPI
+//    16m_irc │     │     │Fractional Rate│   frg_clk14 │     │
+// ──────────▶│010  │────▶│Divider (FRG)  │────────────▶│100  │
+// 48/60m_irc │     │     └───────────────┘       "none"│     │
+// ──────────▶│011  │             ▲          ──────────▶│111  │
+//     "none" │     │             │                     └─────┘
+// ──────────▶│111  │       FRG14CTL[15:0]                 ▲
+//            └─────┘                                      │
+//               ▲                               HS SPI clock select
+//               │                                 FC14FCLKSEL[2:0]
+//    HS SPI FRG clock select
+//       FRG14CLKSEL[2:0]
+//
+// -----
+//
+//
+//                                          16m_clk_irc ┌─────┐
+//                                           ──────────▶│000  │
+//                                           48/60m_irc │     │
+//                                           ──────────▶│001  │
+//   main_clk ┌─────┐                     audio_pll_clk │     │
+// ──────────▶│000  │                        ──────────▶│010  │ function clock
+//    frg_pll │     │                           mclk_in │     │────────────────▶
+// ──────────▶│001  │     ┌───────────────┐  ──────────▶│011  │   of PMIC I2C
+//    16m_irc │     │     │Fractional Rate│   frg_clk14 │     │
+// ──────────▶│010  │────▶│Divider (FRG)  │────────────▶│100  │
+// 48/60m_irc │     │     └───────────────┘       "none"│     │
+// ──────────▶│011  │             ▲          ──────────▶│111  │
+//     "none" │     │             │                     └─────┘
+// ──────────▶│111  │       FRG15CTL[15:0]                 ▲
+//            └─────┘                                      │
+//               ▲                              PMIC I2C clock select
+//               │                                 FC15FCLKSEL[2:0]
+//   PMIC I2C FRG clock select
+//       FRG15CLKSEL[2:0]
+//
+// -----
+//
+// 48/60m_irc ┌─────┐
+// ──────────▶│000  │ to eSPI
+//     "none" │     │────────▶
+// ──────────▶│111  │   fclk
+//            └─────┘
+//               ▲
+//               │
+//       eSPI clock select
+//       ESPIFCLKSEL[2:0]
+//
+// -----
+//
+//     main clk ┌─────┐
+// ────────────▶│000  │
+// main_pll_clk │     │
+// ────────────▶│001  │
+// aux0_pll_clk │     │        ┌─────────────┐
+// ────────────▶│010  │        │FlexSPI Clock│ to FlexSPI
+//   48/60m_irc │     │───────▶│Divider      │───────────▶
+// ────────────▶│011  │        └─────────────┘    fclk
+// aux1_pll_clk │     │               ▲
+// ────────────▶│100  │               │
+//        "none"│     │        FLEXSPIFCLKDIV
+// ────────────▶│111  │
+//              └─────┘
+//                 ▲
+//                 │
+//        OSPI clock select
+//        OSPIFFCLKSEL[2:0]
+//
+// -----
+//
+//     main clk ┌─────┐
+// ────────────▶│000  │
+// main_pll_clk │     │
+// ────────────▶│001  │
+// aux0_pll_clk │     │        ┌─────────────┐
+// ────────────▶│010  │        │SDIO0 Clock  │  to SDIO0
+//   48/60m_irc │     │───────▶│Divider      │───────────▶
+// ────────────▶│011  │        └─────────────┘    fclk
+// aux1_pll_clk │     │               ▲
+// ────────────▶│100  │               │
+//        "none"│     │         SDIO0FCLKDIV
+// ────────────▶│111  │
+//              └─────┘
+//                 ▲
+//                 │
+//       SDIO 0 clock select
+//        SDIO0FCLKSEL[2:0]
+//
+// -----
+//
+//     main clk ┌─────┐
+// ────────────▶│000  │
+// main_pll_clk │     │
+// ────────────▶│001  │
+// aux0_pll_clk │     │        ┌─────────────┐
+// ────────────▶│010  │        │SDIO1 Clock  │  to SDIO1
+//   48/60m_irc │     │───────▶│Divider      │───────────▶
+// ────────────▶│011  │        └─────────────┘    fclk
+// aux1_pll_clk │     │               ▲
+// ────────────▶│100  │               │
+//        "none"│     │         SDIO1FCLKDIV
+// ────────────▶│111  │
+//              └─────┘
+//                 ▲
+//                 │
+//       SDIO 1 clock select
+//        SDIO1FCLKSEL[2:0]
+//
+// -----
+//
+//      clk_in  ┌─────┐
+// ────────────▶│000  │        ┌─────────────┐
+//    main_clk  │     │        │USB Clock    │ to HS
+// ────────────▶│001  │───────▶│Divider      │──────▶
+//      "none"  │     │        └─────────────┘  USB
+// ────────────▶│111  │               ▲
+//              └─────┘               │
+//                 ▲            USBHSFCLKDIV
+//                 │
+//         USB clock select
+//        USBHSFCLKSEL[2:0]
+//
+// -----
+//
+//           ┌─────────────┐  to USB PHY
+//  main_clk │USB PHY bus  │ bus interface
+// ─────────▶│Clock Divider│───────────────▶
+//           └─────────────┘ (max 120MHz)
+//                  ▲
+//                  │
+//          CLKCTL0_PFC1DIV
+//
+// -----
+//
+//     main_clk ┌─────┐
+// ────────────▶│000  │                             ┌────────┐
+//   48/60m_irc │     │                             │I3C fclk│     to I3C fclk
+// ────────────▶│001  │────────────┬───────────────▶│Divider │────────────────────▶
+//       "none" │     │            │                └────────┘ mult of 24 or 25MHz
+// ────────────▶│111  │            │    ┌─────┐          ▲
+//              └─────┘            └───▶│000  │          │
+//                 ▲                    │     │     I3C0FCLKDIV
+//                 │         ┌─────────▶│001  │──┐  ┌────────┐
+//         I3C clock select  │   "none" │     │  └─▶│I3C TC  │            to I3C
+//         I3C0FCLKSEL[2:0]  │   ──────▶│111  │     │Divider │────────────────────▶
+//                           │          └─────┘     └────────┘         clk_slow_tc
+//                           │             ▲             ▲
+//                           │             │             │
+//                           │    I3C TC Select    I3C0FCLKSTCDIV
+//                           │ I3C0FCLKSTCSEL[2:0]  ┌────────┐
+//  1m_lposc                 │                      │I3C TC  │             to I3C
+// ──────────────────────────┴─────────────────────▶│Divider │────────────────────▶
+//                                                  └────────┘            clk_slow
+//                                                       ▲
+//                                                       │
+//                                                  I3C0FCLKSDIV
+//
+// -----
+//
+//     main clk ┌─────┐
+// ────────────▶│000  │
+// main_pll_clk │     │
+// ────────────▶│001  │
+// aux0_pll_clk │     │
+// ────────────▶│010  │        ┌─────────────┐
+//   48/60m_irc │     │        │SCTimer/PWM  │ to SCTimer/PWM
+// ────────────▶│011  │───────▶│Clock Divider│───────────────▶
+// aux1_pll_clk │     │        └─────────────┘  input clock 7
+// ────────────▶│100  │               ▲
+//audio_pll_clk │     │               │
+// ────────────▶│101  │           SCTFCLKDIV
+//       "none" │     │
+// ────────────▶│111  │
+//              └─────┘
+//                 ▲
+//                 │
+//     SCTimer/PWM clock select
+//         SCTFCLKSEL[2:0]
+//
+// -----
+//
+//     main clk ┌─────┐
+// ────────────▶│000  │
+//      16m_irc │     │
+// ────────────▶│001  │
+//   48/60m_irc │     │ function clock of
+// ────────────▶│010  │     CTIMER n
+//audio_pll_clk │     │──────────────────▶
+// ────────────▶│011  │ CTIMERs 0 thru 4
+//      mclk_in │     │
+// ────────────▶│100  │
+//       "none" │     │
+// ────────────▶│111  │
+//              └─────┘
+//                 ▲
+//                 │
+//       TIMER n clock select
+//       CT32BITnFCLKSEL[2:0]
+//
+// -----
+//
+//     1m_lposc ┌─────┐
+// ────────────▶│000  │
+//      32k_clk │     │
+// ────────────▶│001  │ ostimer_clk
+//         hclk │     │────────────▶
+// ────────────▶│010  │
+//       "none" │     │
+// ────────────▶│111  │
+//              └─────┘
+//                 ▲
+//                 │
+//      OS Timer Clock Select
+//       OSEVENTTFCLKSEL[2:0]
+//
+// -----
+//
+//   1m_lposc ┌─────┐
+// ──────────▶│000  │ to WDT0
+//     "none" │     │────────▶
+// ──────────▶│111  │   fclk
+//            └─────┘
+//               ▲
+//               │
+//       WDT0 Clock Select
+//       WDT0FCLKSEL[2:0]
+//
+// -----
+//
+//
+//   1m_lposc ┌─────┐
+// ──────────▶│000  │ to WDT1
+//     "none" │     │────────▶
+// ──────────▶│111  │   fclk
+//            └─────┘
+//               ▲
+//               │
+//       WDT1 Clock Select
+//       WDT1FCLKSEL[2:0]
+//
+// -----
+//
+//
+//   1m_lposc ┌─────┐
+// ──────────▶│000  │ to UTICK
+//     "none" │     │────────▶
+// ──────────▶│111  │   fclk
+//            └─────┘
+//               ▲
+//               │
+//   Utick Timer Clock Select
+//       UTICKFCLKSEL[2:0]
+//
+// -----
+//
+//
+//    16m_irc ┌─────┐                      ┌─────┐
+// ──────────▶│000  │    ┌────────────────▶│000  │
+//     clk_in │     │    │     main_pll_clk│     │
+// ──────────▶│001  │    │      ──────────▶│001  │        ┌─────────┐
+//   1m_lposc │     │    │     aux0_pll_clk│     │        │ADC Clock│ to ADC
+// ──────────▶│010  │────┘      ──────────▶│010  │───────▶│Divider  │───────▶
+// 48/60m_irc │     │          aux1_pll_clk│     │        └─────────┘  fclk
+// ──────────▶│011  │           ──────────▶│011  │             ▲
+//    "none"  │     │              "none"  │     │             │
+// ──────────▶│111  │           ──────────▶│111  │       ADC0FCLKDIV
+//            └─────┘                      └─────┘
+//               ▲                            ▲
+//               │                            │
+//      ADC clock select 0           ADC clock select 1
+//       ADC0FCLKSEL0[2:0]            ADC0FCLKSEL1[2:0]
+//
+// -----
+//
+//     main clk ┌─────┐
+// ────────────▶│000  │
+//      16m_irc │     │
+// ────────────▶│001  │
+//   48/60m_irc │     │   ┌──────────┐
+// ────────────▶│010  │   │ACMP Clock│ to ACMP
+// aux0_pll_clk │     │──▶│Divider   │────────▶
+// ────────────▶│011  │   └──────────┘   fclk
+// aux1_pll_clk │     │        ▲
+// ────────────▶│100  │        │
+//       "none" │     │  ACMP0FCLKDIV
+// ────────────▶│111  │
+//              └─────┘
+//                 ▲
+//                 │
+//        ACMP clock select
+//        ACMP0FCLKSEL[2:0]
+//
+// -----
+//
+//       16m_irc ┌─────┐
+//  ────────────▶│000  │
+//    48/60m_irc │     │
+//  ────────────▶│001  │
+// audio_pll_clk │     │
+//  ────────────▶│010  │      ┌──────────┐
+//       mclk_in │     │      │DMIC Clock│ to D-Mic
+//  ────────────▶│011  │─────▶│Divider   │─────────▶
+//      1m_lposc │     │      └──────────┘subsystem
+//  ────────────▶│100  │           ▲
+//  32k_wake_clk │     │           │
+//  ────────────▶│101  │     DMIC0FCLKDIV
+//        "none" │     │
+//  ────────────▶│111  │
+//               └─────┘
+//                  ▲
+//                  │
+//         DMIC Clock Select
+//         DMIC0FCLKSEL[2:0]
+//
+// -----
+//
+//      16m_irc ┌─────┐                          ┌─────┐
+// ────────────▶│000  │      ┌──────────────────▶│000  │
+//       clk_in │     │      │      main_pll_clk │     │
+// ────────────▶│001  │      │      ────────────▶│001  │
+//     1m_lposc │     │      │      aux0_pll_clk │     │
+// ────────────▶│010  │      │      ────────────▶│010  │
+//   48/60m_irc │     │──────┘       dsp_pll_clk │     │    ┌───────┐
+// ────────────▶│011  │             ────────────▶│011  │    │CLKOUT │    CLKOUT
+//     main_clk │     │             aux1_pll_clk │     │───▶│Divider│────────────▶
+// ────────────▶│100  │             ────────────▶│100  │    └───────┘
+// dsp_main_clk │     │            audio_pll_clk │     │        ▲
+// ────────────▶│110  │             ────────────▶│101  │        │
+//              └─────┘                  32k_clk │     │    CLKOUTDIV
+//                 ▲                ────────────▶│110  │
+//                 │                      "none" │     │
+//         CLKOUT 0 select          ────────────▶│111  │
+//         CLKOUTSEL0[2:0]                       └─────┘
+//                                                  ▲
+//                                                  │
+//                                          CLKOUT 1 select
+//                                          CLKOUTSEL1[2:0]
+//
+// -----
