@@ -340,11 +340,21 @@ impl ClockOperator<'_> {
         }
     }
 
+    /// ```text
+    ///  ┌──────────┐
+    ///  │16 MHz    │ 16m_irc
+    ///  │oscillator│────────▶
+    ///  └──────────┘
+    ///        ▲
+    ///        │
+    /// PDRUNCFG0[14],
+    /// PDSLEEPCFG0[14]
+    /// ```
     fn ensure_16mhz_irc_active(&mut self) {
         if !self.clocks._16m_irc.enabled {
             // TODO(AJM): switch to demand-based model, skip this check?
             assert!(self.config.enable_16m_irc);
-            self.sysctl0.pdruncfg0().modify(|_, w| w.sfro_pd().bit(false));
+            self.sysctl0.pdruncfg0().modify(|_, w| w.sfro_pd().clear_bit());
             self.clocks._16m_irc.enabled = true;
         }
     }
@@ -363,9 +373,40 @@ impl ClockOperator<'_> {
             self.clkctl0.ffroctl1().write(|w| w.update().normal_mode());
 
             // Enable
-            self.sysctl0.pdruncfg0().modify(|_, w| w.ffro_pd().bit(false));
+            self.sysctl0.pdruncfg0().modify(|_, w| w.ffro_pd().clear_bit());
             // NOTE: we know this is always a Some variant
             self.clocks._48_60m_irc = self.config._48_60m_irc_select.freq();
+        }
+    }
+
+    fn ensure_1mhz_lposc_active(&mut self) {
+        if !self.clocks._1m_lposc.enabled {
+            // TODO: AJM
+            assert!(self.config.enable_1m_lposc);
+            self.sysctl0.pdruncfg0().modify(|_, w| {
+                w.lposc_pd().clear_bit();
+                w
+            });
+            self.clocks._1m_lposc.enabled = true;
+        }
+    }
+
+    /// ```text
+    ///             ┌───────────┐
+    ///  rtcxin ───▶│RTC crystal│ 32k_clk
+    /// rtcxout ───▶│oscillator │─────────▶
+    ///             └───────────┘
+    ///                   ▲
+    ///                   │
+    ///                Enable
+    ///            OSC23KHZCTL0[0]
+    /// ```
+    fn ensure_32kclk_active(&mut self) {
+        if !self.clocks._32k_clk.enabled {
+            // TODO: AJM
+            assert!(self.config.enable_32k_clk);
+            self.clkctl0.osc32khzctl0().write(|w| w.ena32khz().set_bit());
+            self.clocks._32k_clk.enabled = true;
         }
     }
 
@@ -469,7 +510,58 @@ impl ClockOperator<'_> {
 
     /// Section 4.2.2: "Configure the main clock and system clock" (part 1)
     fn setup_main_clock(&mut self) {
-        todo!()
+        self.clocks.main_clk = match self.config.main_clock_select {
+            MainClockSelect::_48_60MIrcDiv4 => {
+                self.ensure_48_60mhz_irc_active();
+                self.clocks
+                    ._48_60m_irc
+                    .expect("Main clock uses _48_60m_irc, but _48_60m_irc is not active")
+                    / 4
+            }
+            MainClockSelect::ClkIn => self
+                .clocks
+                .clk_in
+                .expect("Main clock uses clk_in, but clk_in is not active"),
+            MainClockSelect::_1mLposc => {
+                self.ensure_1mhz_lposc_active();
+                self.clocks
+                    ._1m_lposc
+                    .as_option()
+                    .expect("Main clock uses _1m_lposc, but _1m_lposc is not active")
+            }
+            MainClockSelect::_48_60MIrc => {
+                self.ensure_48_60mhz_irc_active();
+                self.clocks
+                    ._48_60m_irc
+                    .expect("Main clock uses _48_60m_irc, but _48_60m_irc is not active")
+            }
+            MainClockSelect::_16mIrc => {
+                self.ensure_16mhz_irc_active();
+                self.clocks
+                    ._16m_irc
+                    .as_option()
+                    .expect("Main clock uses _16m_irc, but _16m_irc is not active")
+            }
+            MainClockSelect::MainPllClk => self
+                .clocks
+                .main_pll_clk
+                .expect("Main clock uses main_pll_clk, but main_pll_clk is not active"),
+            MainClockSelect::_32kClk => {
+                self.ensure_32kclk_active();
+                self.clocks
+                    ._32k_clk
+                    .as_option()
+                    .expect("Main clock uses _32k_clk, but _32k_clk is not active")
+            }
+        };
+
+        // Select the main clock
+        self.clkctl0
+            .mainclksela()
+            .write(|w| unsafe { w.bits((self.config.main_clock_select as u32 & 0b11_00) >> 2) });
+        self.clkctl0
+            .mainclkselb()
+            .write(|w| unsafe { w.bits(self.config.main_clock_select as u32 & 0b00_11) });
     }
 
     /// Section 4.2.2: "Configure the main clock and system clock" (part 2)
@@ -692,63 +784,12 @@ pub(crate) unsafe fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Re
         operator.clocks.aux1_pll_clk = None;
     }
 
-    // // Optionally enable the RTC 32k clock
-    // clkctl0
-    //     .osc32khzctl0()
-    //     .write(|w| w.ena32khz().bit(config.enable_32k_clk));
-    // clocks._32k_clk.enabled = config.enable_32k_clk;
-
-    // // Optionally enable the 16m_irc, 48/60m_irc, 1m_lposc & lp_32k
-    // sysctl0.pdruncfg0().modify(|_, w| {
-    //     w.sfro_pd().bit(!config.enable_16m_irc);
-    //     w
-    // });
-    // clocks._1m_lposc.enabled = config.enable_1m_lposc;
-    // clocks.lp_32k.enabled = config.enable_1m_lposc;
-
-    // // Optionally enable the 32k_wake_clk
-    // clkctl0
-    //     .wakeclk32khzsel()
-    //     .write(|w| w.sel().bits(config._32k_wake_clk_select as u8));
-    // clocks._32k_wake_clk.enabled = !config._32k_wake_clk_select.is_off();
-
-    // SNIP
-
-    // // Select the main clock
-    // clkctl0
-    //     .mainclksela()
-    //     .write(|w| w.bits((config.main_clock_select as u32 & 0b11_00) >> 2));
-    // clkctl0
-    //     .mainclkselb()
-    //     .write(|w| w.bits(config.main_clock_select as u32 & 0b00_11));
-
-    // clocks.main_clk = match config.main_clock_select {
-    //     MainClockSelect::_48_60MIrcDiv4 => {
-    //         clocks
-    //             ._48_60m_irc
-    //             .expect("Main clock uses _48_60m_irc, but _48_60m_irc is not active")
-    //             / 4
-    //     }
-    //     MainClockSelect::ClkIn => clocks.clk_in.expect("Main clock uses clk_in, but clk_in is not active"),
-    //     MainClockSelect::_1mLposc => clocks
-    //         ._1m_lposc
-    //         .as_option()
-    //         .expect("Main clock uses _1m_lposc, but _1m_lposc is not active"),
-    //     MainClockSelect::_48_60MIrc => clocks
-    //         ._48_60m_irc
-    //         .expect("Main clock uses _48_60m_irc, but _48_60m_irc is not active"),
-    //     MainClockSelect::_16mIrc => clocks
-    //         ._16m_irc
-    //         .as_option()
-    //         .expect("Main clock uses _16m_irc, but _16m_irc is not active"),
-    //     MainClockSelect::MainPllClk => clocks
-    //         .main_pll_clk
-    //         .expect("Main clock uses main_pll_clk, but main_pll_clk is not active"),
-    //     MainClockSelect::_32kClk => clocks
-    //         ._32k_clk
-    //         .as_option()
-    //         .expect("Main clock uses _32k_clk, but _32k_clk is not active"),
-    // };
+    // Optionally enable the 32k_wake_clk
+    // TODO(AJM): a better organization for this?
+    clkctl0
+        .wakeclk32khzsel()
+        .write(|w| w.sel().bits(config._32k_wake_clk_select as u8));
+    clocks._32k_wake_clk.enabled = !config._32k_wake_clk_select.is_off();
 
     todo!()
 }
@@ -901,28 +942,6 @@ impl_perph_clk!(WDT0, Clkctl0, pscctl2, Rstctl0, prstctl2, 1);
 impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10);
 
 // Diagrams without homes (yet)
-//
-// -----
-//
-//             ┌───────────┐
-//  rtcxin ───▶│RTC crystal│ 32k_clk
-// rtcxout ───▶│oscillator │─────────▶
-//             └───────────┘
-//                   ▲
-//                   │
-//                Enable
-//            OSC23KHZCTL0[0]
-//
-// -----
-//
-//  ┌──────────┐
-//  │16 MHz    │ 16m_irc
-//  │oscillator│────────▶
-//  └──────────┘
-//        ▲
-//        │
-// PDRUNCFG0[14],
-// PDSLEEPCFG0[14]
 //
 // -----
 //
