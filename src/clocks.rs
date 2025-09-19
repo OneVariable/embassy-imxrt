@@ -359,6 +359,16 @@ impl ClockOperator<'_> {
         }
     }
 
+    /// ```text
+    ///  ┌──────────┐                              48/60m_irc
+    ///  │48/60 MHz │─┬──────────────────────────────────────▶
+    ///  │Oscillator│ │ ┌───────────┐         48/60m_irc_div2
+    ///  └──────────┘ └▶│Divide by 2│────────────────────────▶
+    ///        ▲        └───────────┘         48/60m_irc_div4
+    ///        │              │ ┌───────────┐ ┌──────────────▶
+    /// PDRUNCFG0[15],        └▶│Divide by 2│─┘
+    /// PDSLEEPCFG0[15]         └───────────┘
+    /// ```
     fn ensure_48_60mhz_irc_active(&mut self) {
         if !self.clocks._48_60m_irc.is_none() {
             // Select the 48/60m_irc clock speed
@@ -379,6 +389,20 @@ impl ClockOperator<'_> {
         }
     }
 
+    /// ```text
+    ///                                                    1m_lposc
+    ///                   ┌─────────────────────────────────────────▶
+    ///                   │           32k_clk
+    ///                   │           ───────┐
+    ///  ┌──────────┐     │   ┌─────────┐    │  ┌─────┐
+    ///  │1 MHz low │     │   │divide by│    └─▶│000  │ 32k_wake_clk
+    ///  │power osc.│─────┴──▶│   32    │ ─────▶│001  │─────────────▶
+    ///  └──────────┘         └─────────┘    ┌─▶│111  │
+    ///        ▲                      "none" │  └─────┘
+    ///        │                      ───────┘     ▲
+    /// PDRUNCFG0[14],                             │
+    /// PDSLEEPCFG0[14]                  WAKECLK32KHZSEL[2:0]
+    /// ```
     fn ensure_1mhz_lposc_active(&mut self) {
         if !self.clocks._1m_lposc.enabled {
             // TODO: AJM
