@@ -6,6 +6,7 @@ use crate::peripherals::{PIO0_25, PIO2_15, PIO2_30};
 
 /// Max cpu freq is 300mhz, so that's 300 clock ticks per micro second
 const WORST_CASE_TICKS_PER_US: u32 = 300;
+const FLEXCOMM_INSTANCES: usize = 8;
 
 #[derive(Debug, Clone, Default)]
 pub struct Clocks {
@@ -14,23 +15,26 @@ pub struct Clocks {
     pub _32k_clk: StaticClock<32_768>,
     pub _32k_wake_clk: StaticClock<32_768>,
     pub _48_60m_irc: Option<u32>,
-    pub audio_pll_clk: Option<u32>,
     pub aux0_pll_clk: Option<u32>,
     pub aux1_pll_clk: Option<u32>,
     pub clk_in: Option<u32>,
-    pub dsp_main_clk: Option<u32>,
     pub dsp_pll_clk: Option<u32>,
-    // TODO(AJM): This is actually n=0..=7
-    pub frg_clk_n: Option<u32>,
-    pub frg_clk_14: Option<u32>,
-    pub frg_clk_15: Option<u32>,
-    pub frg_pll: Option<u32>,
-    pub hclk: Option<u32>,
-    pub lp_32k: StaticClock<32_768>,
     pub main_clk: u32,
     pub main_pll_clk: Option<u32>,
-    pub mclk_in: Option<u32>,
-    pub ostimer_clk: Option<u32>,
+    pub sys_cpu_ahb_clk: Option<u32>,
+    //
+    // --- These clocks have not been configured yet ---
+    //
+    // pub dsp_main_clk: Option<u32>,
+    // pub frg_clk_n: [Option<u32>; FLEXCOMM_INSTANCES],
+    // pub audio_pll_clk: Option<u32>,
+    // pub frg_clk_14: Option<u32>,
+    // pub frg_clk_15: Option<u32>,
+    // pub frg_pll: Option<u32>,
+    // pub hclk: Option<u32>,
+    // pub lp_32k: StaticClock<32_768>,
+    // pub mclk_in: Option<u32>,
+    // pub ostimer_clk: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -64,6 +68,8 @@ pub struct ClockConfig {
     pub _32k_wake_clk_select: _32kWakeClkSelect,
     pub main_pll: Option<MainPll>,
     pub main_clock_select: MainClockSelect,
+    /// Main clock divided by (1 + sys_cpu_ahb_div)
+    pub sys_cpu_ahb_div: u8,
 }
 
 impl Default for ClockConfig {
@@ -193,6 +199,12 @@ pub enum ClkInSelect {
     ClkIn2_30 { freq: u32, pin: PIO2_30 },
 }
 
+impl Default for ClkInSelect {
+    fn default() -> Self {
+        todo!()
+    }
+}
+
 /// ```text
 ///                      ┌────┐
 ///  48/60m_irc_div2 ───▶│00  │
@@ -286,15 +298,32 @@ impl _32kWakeClkSelect {
     }
 }
 
-pub enum ClockError {}
+pub enum ClockError {
+    BadConfiguration {
+        reason: &'static str,
+    },
+    Programming {
+        reason: &'static str,
+    },
+}
+
+impl ClockError {
+    fn bad_config(reason: &'static str) -> Self {
+        Self::BadConfiguration { reason }
+    }
+
+    fn prog_err(reason: &'static str) -> Self {
+        Self::Programming { reason }
+    }
+}
 
 struct ClockOperator<'a> {
     config: &'a ClockConfig,
     clocks: &'a mut Clocks,
-    clkctl0: &'a pac::Clkctl0,
-    clkctl1: &'a pac::Clkctl1,
-    sysctl0: &'a pac::Sysctl0,
-    sysctl1: &'a pac::Sysctl1,
+    clkctl0: pac::Clkctl0,
+    // clkctl1: pac::Clkctl1,
+    sysctl0: pac::Sysctl0,
+    // sysctl1: pac::Sysctl1,
 }
 
 impl ClockOperator<'_> {
@@ -350,13 +379,15 @@ impl ClockOperator<'_> {
     /// PDRUNCFG0[14],
     /// PDSLEEPCFG0[14]
     /// ```
-    fn ensure_16mhz_irc_active(&mut self) {
+    fn ensure_16mhz_irc_active(&mut self) -> Result<u32, ClockError> {
         if !self.clocks._16m_irc.enabled {
-            // TODO(AJM): switch to demand-based model, skip this check?
-            assert!(self.config.enable_16m_irc);
+            if !self.config.enable_16m_irc {
+                return Err(ClockError::bad_config("16m_irc not enabled but required"));
+            }
             self.sysctl0.pdruncfg0().modify(|_, w| w.sfro_pd().clear_bit());
             self.clocks._16m_irc.enabled = true;
         }
+        Ok(self.clocks._16m_irc.frequency())
     }
 
     /// ```text
@@ -369,15 +400,19 @@ impl ClockOperator<'_> {
     /// PDRUNCFG0[15],        └▶│Divide by 2│─┘
     /// PDSLEEPCFG0[15]         └───────────┘
     /// ```
-    fn ensure_48_60mhz_irc_active(&mut self) {
-        if !self.clocks._48_60m_irc.is_none() {
+    fn ensure_48_60mhz_irc_active(&mut self) -> Result<u32, ClockError> {
+        if let Some(freq) = self.clocks._48_60m_irc {
+            Ok(freq)
+        } else {
             // Select the 48/60m_irc clock speed
             self.clkctl0.ffroctl1().write(|w| w.update().update_safe_mode());
-            let variant = match self.config._48_60m_irc_select {
+            let (variant, freq) = match self.config._48_60m_irc_select {
                 // TODO(AJM): switch to demand-based model, skip this check?
-                _48_60mIrcSelect::Off => panic!("conflicting requirements"),
-                _48_60mIrcSelect::Mhz48 => pac::clkctl0::ffroctl0::TrimRange::Ffro48mhz,
-                _48_60mIrcSelect::Mhz60 => pac::clkctl0::ffroctl0::TrimRange::Ffro60mhz,
+                _48_60mIrcSelect::Off => {
+                    return Err(ClockError::bad_config("48/60m_irc required but disabled"));
+                }
+                _48_60mIrcSelect::Mhz48 => (pac::clkctl0::ffroctl0::TrimRange::Ffro48mhz, 48_000_000),
+                _48_60mIrcSelect::Mhz60 => (pac::clkctl0::ffroctl0::TrimRange::Ffro60mhz, 60_000_000),
             };
             self.clkctl0.ffroctl0().write(|w| w.trim_range().variant(variant));
             self.clkctl0.ffroctl1().write(|w| w.update().normal_mode());
@@ -386,6 +421,7 @@ impl ClockOperator<'_> {
             self.sysctl0.pdruncfg0().modify(|_, w| w.ffro_pd().clear_bit());
             // NOTE: we know this is always a Some variant
             self.clocks._48_60m_irc = self.config._48_60m_irc_select.freq();
+            Ok(freq)
         }
     }
 
@@ -403,16 +439,15 @@ impl ClockOperator<'_> {
     /// PDRUNCFG0[14],                             │
     /// PDSLEEPCFG0[14]                  WAKECLK32KHZSEL[2:0]
     /// ```
-    fn ensure_1mhz_lposc_active(&mut self) {
+    fn ensure_1mhz_lposc_active(&mut self) -> Result<u32, ClockError> {
         if !self.clocks._1m_lposc.enabled {
-            // TODO: AJM
-            assert!(self.config.enable_1m_lposc);
-            self.sysctl0.pdruncfg0().modify(|_, w| {
-                w.lposc_pd().clear_bit();
-                w
-            });
+            if !self.config.enable_1m_lposc {
+                return Err(ClockError::bad_config("1m_lposc disabled but required"));
+            }
+            self.sysctl0.pdruncfg0().modify(|_, w| w.lposc_pd().clear_bit());
             self.clocks._1m_lposc.enabled = true;
         }
+        Ok(self.clocks._1m_lposc.frequency())
     }
 
     /// ```text
@@ -425,13 +460,16 @@ impl ClockOperator<'_> {
     ///                Enable
     ///            OSC23KHZCTL0[0]
     /// ```
-    fn ensure_32kclk_active(&mut self) {
+    fn ensure_32kclk_active(&mut self) -> Result<u32, ClockError> {
         if !self.clocks._32k_clk.enabled {
             // TODO: AJM
-            assert!(self.config.enable_32k_clk);
+            if !self.config.enable_32k_clk {
+                return Err(ClockError::bad_config("32k_clk required but not enabled"));
+            }
             self.clkctl0.osc32khzctl0().write(|w| w.ena32khz().set_bit());
             self.clocks._32k_clk.enabled = true;
         }
+        Ok(self.clocks._32k_clk.frequency())
     }
 
     /// Section 4.2.1: "Set up the Main PLL"
@@ -441,7 +479,7 @@ impl ClockOperator<'_> {
     /// > MHz or 48/60 MHz clocks are not appropriate, use the PLL to boost the input frequency.
     /// > The PLL can be set up by calling an API supplied by NXP Semiconductors. Also see
     /// > Section 4.6.1 “PLLs”and Chapter 6 “RT6xx Power APIs”.
-    fn setup_main_pll(&mut self, sel: Option<MainPll>) -> u32 {
+    fn setup_main_pll(&mut self, sel: Option<MainPll>) -> Result<Option<(u32, MainPll)>, ClockError> {
         // Turn off the PLL if it was running
         //
         // TODO(AJM): Do we need to reset to some default FIRST before we disable the PLL
@@ -469,24 +507,20 @@ impl ClockOperator<'_> {
 
             // TODO(AJM): Do we need to set `clocks` to reflect the main PLL and downstream
             // PDF0..=3 are disabled/impossible to set?
-            return 0;
+            return Ok(None);
         };
 
-        assert!(
-            (16..=22).contains(&sel.multiplier),
-            "main pll multiplier out of allowed range"
-        );
+        if !(16..=22).contains(&sel.multiplier) {
+            return Err(ClockError::bad_config("main pll multiplier out of allowed range"));
+        }
 
         let pll_input_freq = match sel.clock_select {
-            MainPllClockSelect::_16mIrc => {
-                self.ensure_16mhz_irc_active();
-                self.clocks._16m_irc.frequency()
-            }
-            MainPllClockSelect::ClkIn => self.clocks.clk_in.expect("We should have set clk_in by now"),
-            MainPllClockSelect::_48_60MIrcDiv2 => {
-                self.ensure_48_60mhz_irc_active();
-                self.clocks._48_60m_irc.expect("impossible")
-            }
+            MainPllClockSelect::_16mIrc => self.ensure_16mhz_irc_active()?,
+            MainPllClockSelect::ClkIn => self
+                .clocks
+                .clk_in
+                .ok_or_else(|| ClockError::prog_err("We should have set clk_in by now"))?,
+            MainPllClockSelect::_48_60MIrcDiv2 => self.ensure_48_60mhz_irc_active()?,
         };
 
         // Select the clock input we want
@@ -529,54 +563,27 @@ impl ClockOperator<'_> {
         cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * lock_time_div_2 as u32);
 
         // Output freq is just input times multiplier because the fractional part is hardcoded at 0
-        pll_input_freq * sel.multiplier as u32
+        Ok(Some((pll_input_freq * sel.multiplier as u32, sel)))
     }
 
     /// Section 4.2.2: "Configure the main clock and system clock" (part 1)
-    fn setup_main_clock(&mut self) {
+    fn setup_main_clock(&mut self) -> Result<(), ClockError> {
         self.clocks.main_clk = match self.config.main_clock_select {
-            MainClockSelect::_48_60MIrcDiv4 => {
-                self.ensure_48_60mhz_irc_active();
-                self.clocks
-                    ._48_60m_irc
-                    .expect("Main clock uses _48_60m_irc, but _48_60m_irc is not active")
-                    / 4
+            MainClockSelect::_48_60MIrcDiv4 => self.ensure_48_60mhz_irc_active()? / 4,
+            MainClockSelect::ClkIn => {
+                return Err(ClockError::bad_config(
+                    "Main clock uses clk_in, but clk_in is not active",
+                ));
             }
-            MainClockSelect::ClkIn => self
-                .clocks
-                .clk_in
-                .expect("Main clock uses clk_in, but clk_in is not active"),
-            MainClockSelect::_1mLposc => {
-                self.ensure_1mhz_lposc_active();
-                self.clocks
-                    ._1m_lposc
-                    .as_option()
-                    .expect("Main clock uses _1m_lposc, but _1m_lposc is not active")
+            MainClockSelect::_1mLposc => self.ensure_1mhz_lposc_active()?,
+            MainClockSelect::_48_60MIrc => self.ensure_48_60mhz_irc_active()?,
+            MainClockSelect::_16mIrc => self.ensure_16mhz_irc_active()?,
+            MainClockSelect::MainPllClk => {
+                return Err(ClockError::bad_config(
+                    "Main clock uses main_pll_clk, but main_pll_clk is not active",
+                ));
             }
-            MainClockSelect::_48_60MIrc => {
-                self.ensure_48_60mhz_irc_active();
-                self.clocks
-                    ._48_60m_irc
-                    .expect("Main clock uses _48_60m_irc, but _48_60m_irc is not active")
-            }
-            MainClockSelect::_16mIrc => {
-                self.ensure_16mhz_irc_active();
-                self.clocks
-                    ._16m_irc
-                    .as_option()
-                    .expect("Main clock uses _16m_irc, but _16m_irc is not active")
-            }
-            MainClockSelect::MainPllClk => self
-                .clocks
-                .main_pll_clk
-                .expect("Main clock uses main_pll_clk, but main_pll_clk is not active"),
-            MainClockSelect::_32kClk => {
-                self.ensure_32kclk_active();
-                self.clocks
-                    ._32k_clk
-                    .as_option()
-                    .expect("Main clock uses _32k_clk, but _32k_clk is not active")
-            }
+            MainClockSelect::_32kClk => self.ensure_32kclk_active()?,
         };
 
         // Select the main clock
@@ -586,20 +593,68 @@ impl ClockOperator<'_> {
         self.clkctl0
             .mainclkselb()
             .write(|w| unsafe { w.bits(self.config.main_clock_select as u32 & 0b00_11) });
+        Ok(())
     }
 
     /// Section 4.2.2: "Configure the main clock and system clock" (part 2)
-    fn setup_system_clock(&mut self) {
-        todo!()
+    ///                  ┌─────────┐
+    ///                  │CPU Clock│  to CPU, AHB, APB, etc.
+    ///             ┌───▶│Divider  │──────────────────────────────────────▶
+    ///             │    └─────────┘           hclk
+    ///             │         ▲
+    ///             │         │
+    ///             │  SYSCPUAHBCLKDIV
+    ///             │  ┌─────────────┐
+    ///             │  │ARM Trace    │ to ARM Trace function clock
+    /// main_clk ───┼─▶│Clock Divider│────────────────────────────────────▶
+    ///             │  └─────────────┘
+    ///             │         ▲
+    ///             │         │
+    ///             │      PFC0DIV
+    ///             │  ┌─────────────┐
+    ///             │  │Systick Clock│                ┌─────┐
+    ///             ├─▶│Divider      │───────────────▶│000  │
+    ///                └─────────────┘   1m_lposc┌───▶│001  │  to Systick
+    ///                       ▲          ────────┘┌──▶│010  │─────────────▶
+    ///                       │           32k_clk │┌─▶│011  │function clock
+    ///                SYSTICKFCLKDIV    ─────────┘│┌▶│111  │
+    ///                                   16m_irc  ││ └─────┘
+    ///                                  ──────────┘│    ▲
+    ///                                    "none"   │    │
+    ///                                  ───────────┘    │
+    ///                                                  │
+    ///                                  SYSTICKFCLKSEL[2:0]
+    fn setup_system_clock(&mut self) -> Result<(), ClockError> {
+        let current_div = self.clkctl0.syscpuahbclkdiv().read().div();
+        if current_div != self.config.sys_cpu_ahb_div {
+            // "The clock being divided must be running for [reqflag] to change"
+            if self.clocks.main_clk == 0 {
+                return Err(ClockError::prog_err("main_clk not configured"));
+            }
+            self.clkctl0
+                .syscpuahbclkdiv()
+                .modify(|_r, w| unsafe { w.div().bits(self.config.sys_cpu_ahb_div) });
+            // "Set when a change is made, clear when the change is complete"
+            while self.clkctl0.syscpuahbclkdiv().read().reqflag().bit_is_set() {}
+        }
+
+        // NOTE: We currently don't do any of the following:
+        //
+        // * Enable ARM Trace clock divider
+        // * Enable Systick Clock divider, enable systick function clock
+        // * Enable any of the CLKCTL0_PSCCTLn registers, these will be done
+        //   later when peripherals are enabled
+        Ok(())
     }
 
-    fn setup_pll_pfd0(&mut self, main_pll: &MainPll, pll_output_freq: u32) {
+    fn setup_pll_pfd0(&mut self, main_pll: &MainPll, pll_output_freq: u32) -> Result<(), ClockError> {
         let Some(div) = main_pll.pfd0_div else {
             self.disable_pll_pfd0();
-            self.clocks.main_pll_clk = Some(pll_output_freq);
-            return;
+            return Ok(());
         };
-        assert!((12..=35).contains(&div), "`pfd0_div` is out of the allowed range");
+        if !(12..=35).contains(&div) {
+            return Err(ClockError::bad_config("`pfd0_div` is out of the allowed range"));
+        }
 
         self.clkctl0.syspll0pfd().modify(|_, w| {
             unsafe {
@@ -613,10 +668,11 @@ impl ClockOperator<'_> {
 
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
-        assert!(
-            (1..=256).contains(&main_pll.main_pll_clock_divider),
-            "`main_pll_clock_divider` is out of the allowed range"
-        );
+        if !(1..=256).contains(&main_pll.main_pll_clock_divider) {
+            return Err(ClockError::bad_config(
+                "`main_pll_clock_divider` is out of the allowed range",
+            ));
+        }
 
         // Halt and reset the div
         self.clkctl0.mainpllclkdiv().write(|w| w.halt().set_bit());
@@ -629,15 +685,17 @@ impl ClockOperator<'_> {
         while self.clkctl0.mainpllclkdiv().read().reqflag().bit_is_set() {}
 
         self.clocks.main_pll_clk = Some(pfd_freq / (main_pll.main_pll_clock_divider - 1) as u32);
+        Ok(())
     }
 
-    fn setup_pll_pfd1(&mut self, main_pll: &MainPll, pll_output_freq: u32) {
+    fn setup_pll_pfd1(&mut self, main_pll: &MainPll, pll_output_freq: u32) -> Result<(), ClockError> {
         let Some(div) = main_pll.pfd1_div else {
             self.disable_pll_pfd1();
-            self.clocks.dsp_pll_clk = Some(pll_output_freq);
-            return;
+            return Ok(());
         };
-        assert!((12..=35).contains(&div), "`pfd1_div` is out of the allowed range");
+        if !(12..=35).contains(&div) {
+            return Err(ClockError::bad_config("`pfd1_div` is out of the allowed range"));
+        }
 
         self.clkctl0.syspll0pfd().modify(|_, w| {
             unsafe {
@@ -651,10 +709,11 @@ impl ClockOperator<'_> {
 
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
-        assert!(
-            (1..=256).contains(&main_pll.dsp_pll_clock_divider),
-            "`dsp_pll_clock_divider` is out of the allowed range"
-        );
+        if !(1..=256).contains(&main_pll.dsp_pll_clock_divider) {
+            return Err(ClockError::bad_config(
+                "`dsp_pll_clock_divider` is out of the allowed range",
+            ));
+        }
 
         // Halt and reset the div
         self.clkctl0.dsppllclkdiv().write(|w| w.halt().set_bit());
@@ -667,16 +726,17 @@ impl ClockOperator<'_> {
         while self.clkctl0.dsppllclkdiv().read().reqflag().bit_is_set() {}
 
         self.clocks.dsp_pll_clk = Some(pfd_freq / (main_pll.dsp_pll_clock_divider - 1) as u32);
+        Ok(())
     }
 
-    fn setup_pll_pfd2(&mut self, main_pll: &MainPll, pll_output_freq: u32) {
+    fn setup_pll_pfd2(&mut self, main_pll: &MainPll, pll_output_freq: u32) -> Result<(), ClockError> {
         let Some(div) = main_pll.pfd2_div else {
             self.disable_pll_pfd2();
-            self.clocks.aux0_pll_clk = Some(pll_output_freq);
-            return;
+            return Ok(());
         };
-        assert!((12..=35).contains(&div), "`pfd2_div` is out of the allowed range");
-
+        if !(12..=35).contains(&div) {
+            return Err(ClockError::bad_config("`pfd2_div` is out of the allowed range"));
+        }
         self.clkctl0.syspll0pfd().modify(|_, w| {
             unsafe {
                 w.pfd2().bits(div);
@@ -689,10 +749,11 @@ impl ClockOperator<'_> {
 
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
-        assert!(
-            (1..=256).contains(&main_pll.aux0_pll_clock_divider),
-            "`aux0_pll_clock_divider` is out of the allowed range"
-        );
+        if !(1..=256).contains(&main_pll.aux0_pll_clock_divider) {
+            return Err(ClockError::bad_config(
+                "`aux0_pll_clock_divider` is out of the allowed range",
+            ));
+        }
 
         // Halt and reset the div
         self.clkctl0.aux0pllclkdiv().write(|w| w.halt().set_bit());
@@ -705,15 +766,17 @@ impl ClockOperator<'_> {
         while self.clkctl0.aux0pllclkdiv().read().reqflag().bit_is_set() {}
 
         self.clocks.aux0_pll_clk = Some(pfd_freq / (main_pll.aux0_pll_clock_divider - 1) as u32);
+        Ok(())
     }
 
-    fn setup_pll_pfd3(&mut self, main_pll: &MainPll, pll_output_freq: u32) {
+    fn setup_pll_pfd3(&mut self, main_pll: &MainPll, pll_output_freq: u32) -> Result<(), ClockError> {
         let Some(div) = main_pll.pfd3_div else {
             self.disable_pll_pfd3();
-            self.clocks.aux1_pll_clk = Some(pll_output_freq);
-            return;
+            return Ok(());
         };
-        assert!((12..=35).contains(&div), "`pfd3_div` is out of the allowed range");
+        if !(12..=35).contains(&div) {
+            return Err(ClockError::bad_config("`pfd3_div` is out of the allowed range"));
+        }
 
         self.clkctl0.syspll0pfd().modify(|_, w| {
             unsafe {
@@ -727,10 +790,11 @@ impl ClockOperator<'_> {
 
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
-        assert!(
-            (1..=256).contains(&main_pll.aux1_pll_clock_divider),
-            "`aux1_pll_clock_divider` is out of the allowed range"
-        );
+        if !(1..=256).contains(&main_pll.aux1_pll_clock_divider) {
+            return Err(ClockError::bad_config(
+                "`aux1_pll_clock_divider` is out of the allowed range",
+            ));
+        }
 
         // Halt and reset the div
         self.clkctl0.aux1pllclkdiv().write(|w| w.halt().set_bit());
@@ -743,26 +807,31 @@ impl ClockOperator<'_> {
         while self.clkctl0.aux1pllclkdiv().read().reqflag().bit_is_set() {}
 
         self.clocks.aux1_pll_clk = Some(pfd_freq / (main_pll.aux1_pll_clock_divider - 1) as u32);
+        Ok(())
     }
 
     fn disable_pll_pfd0(&mut self) {
         self.clkctl0.mainpllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.syspll0pfd().modify(|_, w| w.pfd0_clkgate().gated());
+        self.clocks.main_pll_clk = None;
     }
 
     fn disable_pll_pfd1(&mut self) {
         self.clkctl0.dsppllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.syspll0pfd().modify(|_, w| w.pfd1_clkgate().gated());
+        self.clocks.dsp_pll_clk = None;
     }
 
     fn disable_pll_pfd2(&mut self) {
         self.clkctl0.aux0pllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.syspll0pfd().modify(|_, w| w.pfd2_clkgate().gated());
+        self.clocks.aux0_pll_clk = None;
     }
 
     fn disable_pll_pfd3(&mut self) {
         self.clkctl0.aux1pllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.syspll0pfd().modify(|_, w| w.pfd3_clkgate().gated());
+        self.clocks.aux1_pll_clk = None;
     }
 }
 
@@ -772,45 +841,42 @@ pub(crate) unsafe fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Re
 
     let mut clocks = Clocks::default();
 
-    let clkctl0 = pac::Clkctl0::steal();
-    let clkctl1 = pac::Clkctl1::steal();
-    let sysctl0 = pac::Sysctl0::steal();
-    let sysctl1 = pac::Sysctl1::steal();
-
     let mut operator = ClockOperator {
         config: &config,
         clocks: &mut clocks,
-        clkctl0: &clkctl0,
-        clkctl1: &clkctl1,
-        sysctl0: &sysctl0,
-        sysctl1: &sysctl1,
+        clkctl0: pac::Clkctl0::steal(),
+        // clkctl1: pac::Clkctl1::steal(),
+        sysctl0: pac::Sysctl0::steal(),
+        // sysctl1: pac::Sysctl1::steal(),
     };
 
     // If necessary, set up the clock-in
     operator.setup_clock_in(clk_in_select);
 
-    let pll_output_freq = operator.setup_main_pll(config.main_pll.clone());
-    if pll_output_freq != 0 {
-        let mpll = config.main_pll.unwrap();
-        operator.setup_pll_pfd0(&mpll, pll_output_freq);
-        operator.setup_pll_pfd1(&mpll, pll_output_freq);
-        operator.setup_pll_pfd2(&mpll, pll_output_freq);
-        operator.setup_pll_pfd3(&mpll, pll_output_freq);
+    let pll_output_freq = operator.setup_main_pll(config.main_pll)?;
+    if let Some((freq, main_pll)) = pll_output_freq {
+        operator.setup_pll_pfd0(&main_pll, freq)?;
+        operator.setup_pll_pfd1(&main_pll, freq)?;
+        operator.setup_pll_pfd2(&main_pll, freq)?;
+        operator.setup_pll_pfd3(&main_pll, freq)?;
     } else {
-        // TODO(AJM): is "disable" and "bypass" the same thing?
+        // If the PLL output is not enabled, then we can't feed PFD0-3, so just
+        // gate them to save power.
         operator.disable_pll_pfd0();
         operator.disable_pll_pfd1();
         operator.disable_pll_pfd2();
         operator.disable_pll_pfd3();
-        operator.clocks.main_pll_clk = None;
-        operator.clocks.dsp_pll_clk = None;
-        operator.clocks.aux0_pll_clk = None;
-        operator.clocks.aux1_pll_clk = None;
     }
+
+    // Setup main clock
+    operator.setup_main_clock()?;
+    // Setup system clock
+    operator.setup_system_clock()?;
 
     // Optionally enable the 32k_wake_clk
     // TODO(AJM): a better organization for this?
-    clkctl0
+    operator
+        .clkctl0
         .wakeclk32khzsel()
         .write(|w| w.sel().bits(config._32k_wake_clk_select as u8));
     clocks._32k_wake_clk.enabled = !config._32k_wake_clk_select.is_off();
@@ -971,14 +1037,14 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10);
 //
 //                     ┌─────┐       ┌────────────┐
 //         16m_irc ───▶│000  │       │            │      ┌─────────────┐
-//          clk_in ───▶│001  │       │ Audio      │      │Main PLL     │  main_pll_clk
+//          clk_in ───▶│001  │       │ Audio      │      │Audio PLL    │  audio_pll_clk
 // 48/60m_irc_div2 ───▶│010  │──────▶│ PLL   PFD0 │─────▶│Clock Divider│ ────────────▶
 //          "none" ───▶│111  │       │            │      └─────────────┘
 //                     └─────┘       └────────────┘             ▲
 //                        ▲                 ▲                   │
-//                        │                 │             MAINPLLCLKDIV
+//                        │                 │             AUDIOPLLCLKDIV
 //          Audio PLL clock select  Audio PLL settings
-//           AUDIOPLL0CLKSEL[2:0]        SYSPLL0xx
+//           AUDIOPLL0CLKSEL[2:0]      AUDIOPLL0xx
 //
 // -----
 //

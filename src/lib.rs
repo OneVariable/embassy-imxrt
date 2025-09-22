@@ -142,6 +142,7 @@ pub mod config {
         pub time_interrupt_priority: crate::interrupt::Priority,
     }
 
+    #[allow(clippy::derivable_impls)]
     impl Default for Config {
         fn default() -> Self {
             Self {
@@ -175,7 +176,7 @@ pub fn init(config: config::Config) -> Peripherals {
     let peripherals = Peripherals::take();
 
     unsafe {
-        if let Err(e) = clocks::init(config.clocks) {
+        if let Err(e) = clocks::init(config.clocks, clocks::ClkInSelect::default()) {
             error!("unable to initialize Clocks for reason: {:?}", e);
             // Panic here?
         }
