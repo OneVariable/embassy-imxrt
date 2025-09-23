@@ -1,3 +1,6 @@
+use core::cell::RefCell;
+
+use critical_section::Mutex;
 use paste::paste;
 
 use crate::iopctl::IopctlPin;
@@ -8,6 +11,9 @@ use crate::peripherals::{PIO0_25, PIO2_15, PIO2_30};
 const WORST_CASE_TICKS_PER_US: u32 = 300;
 const FLEXCOMM_INSTANCES: usize = 8;
 
+static CLOCKS: Mutex<RefCell<Option<Clocks>>> = Mutex::new(RefCell::new(None));
+
+
 #[derive(Debug, Clone, Default)]
 pub struct Clocks {
     /// "LPOSC", a very low power (but less accurate, +/- 10%) clock
@@ -17,18 +23,34 @@ pub struct Clocks {
     /// source (note: Datasheet says +/-3%, but reference manual mentions
     /// +/- 1%?)
     pub _16m_irc: StaticClock<16_000_000>,
-
+    /// 32kHz RTC Crystal Oscillator
     pub _32k_clk: StaticClock<32_768>,
+    /// 32kHz "wake clock", can be sourced from either the RTC oscillator,
+    /// or a divided version of the 1m_lposc
     pub _32k_wake_clk: StaticClock<32_768>,
     /// "FFRO", a higher power, +/- 1%, 48- or 60-MHz internal oscillator
     /// clock source
     pub _48_60m_irc: Option<u32>,
-    pub aux0_pll_clk: Option<u32>,
-    pub aux1_pll_clk: Option<u32>,
-    pub clk_in: Option<u32>,
-    pub dsp_pll_clk: Option<u32>,
-    pub main_clk: u32,
+    /// Output of the Main PLL (as PFD0), divided by the
+    /// Main PLL Clock Divider
     pub main_pll_clk: Option<u32>,
+    /// Output of the Main PLL (as PFD1), divided by the
+    /// DSP PLL Clock Divider
+    pub dsp_pll_clk: Option<u32>,
+    /// Output of the Main PLL (as PFD2), divided by the
+    /// AUX0 PLL Clock Divider
+    pub aux0_pll_clk: Option<u32>,
+    /// Output of the Main PLL (as PFD3), divided by the
+    /// AUX1 PLL Clock Divider
+    pub aux1_pll_clk: Option<u32>,
+    /// External clock-in source, fed either by a clock source
+    /// or external oscillator
+    pub clk_in: Option<u32>,
+    /// "Main Clock" sourced from a variety of selectable sources,
+    /// used as the input for the CPU Clock Divider, ARM Trace Clock,
+    /// and Systick clock source
+    pub main_clk: u32,
+    /// The output of the CPU Clock Divider, sourced from `main_clk`
     pub sys_cpu_ahb_clk: Option<u32>,
     //
     // --- These clocks have not been configured yet ---
@@ -307,12 +329,16 @@ impl _32kWakeClkSelect {
 }
 
 pub enum ClockError {
+    /// The requested configuration was impossible or conflicting
     BadConfiguration {
         reason: &'static str,
     },
+    /// A programming error occurred. This should be impossible.
     Programming {
         reason: &'static str,
     },
+    /// Attempted to re-configure the clocks, calling `init` twice.
+    AlreadyConfigured,
 }
 
 impl ClockError {
@@ -845,14 +871,22 @@ impl ClockOperator<'_> {
 pub(crate) unsafe fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
     // TODO: When enabling clocks, wait the appropriate time
 
+    // Ensure we haven't already configured the clocks
+    critical_section::with(|cs| {
+        if CLOCKS.borrow_ref(cs).is_some() {
+            Err(ClockError::AlreadyConfigured)
+        } else {
+            Ok(())
+        }
+    })?;
     let mut clocks = Clocks::default();
 
     let mut operator = ClockOperator {
         config: &config,
         clocks: &mut clocks,
         clkctl0: pac::Clkctl0::steal(),
-        // clkctl1: pac::Clkctl1::steal(),
         sysctl0: pac::Sysctl0::steal(),
+        // clkctl1: pac::Clkctl1::steal(),
         // sysctl1: pac::Sysctl1::steal(),
     };
 
@@ -887,12 +921,20 @@ pub(crate) unsafe fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Re
         .write(|w| w.sel().bits(config._32k_wake_clk_select as u8));
     clocks._32k_wake_clk.enabled = !config._32k_wake_clk_select.is_off();
 
-    todo!()
+    // Store the configured clocks object statically so we can retrieve it to
+    // check coherency later
+    critical_section::with(|cs| {
+        *CLOCKS.borrow_ref_mut(cs) = Some(clocks);
+    });
+    Ok(())
 }
 
 ///Trait to expose perph clocks
-trait SealedSysconPeripheral {
-    fn enable_perph_clock();
+// TODO: pub?
+pub trait SealedSysconPeripheral {
+    type SysconPeriphConfig;
+
+    fn enable_perph_clock(cfg: &Self::SysconPeriphConfig);
     fn reset_perph();
     fn disable_perph_clock();
 }
@@ -906,14 +948,14 @@ pub trait SysconPeripheral: SealedSysconPeripheral + 'static {}
 /// # Safety
 ///
 /// Peripheral must not be in use.
-pub fn enable_and_reset<T: SysconPeripheral>() {
-    T::enable_perph_clock();
+pub fn enable_and_reset<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) {
+    T::enable_perph_clock(cfg);
     T::reset_perph();
 }
 
 /// Enables peripheral `T`.
-pub fn enable<T: SysconPeripheral>() {
-    T::enable_perph_clock();
+pub fn enable<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) {
+    T::enable_perph_clock(cfg);
 }
 
 /// Reset peripheral `T`.
@@ -934,12 +976,30 @@ pub fn clock_freq<T: SysconPeripheral>() -> u32 {
     todo!()
 }
 
+pub struct UnimplementedConfig;
+fn unimpld_cfg(_cfg: &UnimplementedConfig) {
+    todo!()
+}
+
 macro_rules! impl_perph_clk {
-    ($peripheral:ident, $clkctl:ident, $clkreg:ident, $rstctl:ident, $rstreg:ident, $bit:expr) => {
+    (
+        $peripheral:ident,
+        $clkctl:ident,
+        $clkreg:ident,
+        $rstctl:ident,
+        $rstreg:ident,
+        $bit:expr,
+        $cfgty:ty,
+        $cfgfn:ident
+    ) => {
         impl SealedSysconPeripheral for crate::peripherals::$peripheral {
-            fn enable_perph_clock() {
+            type SysconPeriphConfig = $cfgty;
+
+            fn enable_perph_clock(_cfg: &Self::SysconPeriphConfig) {
                 // SAFETY: unsafe needed to take pointers to Rstctl1 and Clkctl1
                 let cc1 = unsafe { pac::$clkctl::steal() };
+
+                $cfgfn(_cfg);
 
                 paste! {
                     // SAFETY: unsafe due to the use of bits()
@@ -973,69 +1033,69 @@ macro_rules! impl_perph_clk {
 }
 
 // These should enabled once the relevant peripherals are implemented.
-// impl_perph_clk!(GPIOINTCTL, Clkctl1, pscctl2, Rstctl1, prstctl2, 30);
-// impl_perph_clk!(OTP, Clkctl0, pscctl0, Rstctl0, prstctl0, 17);
+// impl_perph_clk!(GPIOINTCTL, Clkctl1, pscctl2, Rstctl1, prstctl2, 30, UnimplementedConfig, unimpld_cfg);
+// impl_perph_clk!(OTP, Clkctl0, pscctl0, Rstctl0, prstctl0, 17, UnimplementedConfig, unimpld_cfg);
 
-// impl_perph_clk!(ROM_CTL_128KB, Clkctl0, pscctl0, Rstctl0, prstctl0, 2);
-// impl_perph_clk!(USBHS_SRAM, Clkctl0, pscctl0, Rstctl0, prstctl0, 23);
+// impl_perph_clk!(ROM_CTL_128KB, Clkctl0, pscctl0, Rstctl0, prstctl0, 2, UnimplementedConfig, unimpld_cfg);
+// impl_perph_clk!(USBHS_SRAM, Clkctl0, pscctl0, Rstctl0, prstctl0, 23, UnimplementedConfig, unimpld_cfg);
 
-impl_perph_clk!(PIMCTL, Clkctl1, pscctl2, Rstctl1, prstctl2, 31);
-impl_perph_clk!(ACMP, Clkctl0, pscctl1, Rstctl0, prstctl1, 15);
-impl_perph_clk!(ADC0, Clkctl0, pscctl1, Rstctl0, prstctl1, 16);
-impl_perph_clk!(CASPER, Clkctl0, pscctl0, Rstctl0, prstctl0, 9);
-impl_perph_clk!(CRC, Clkctl1, pscctl1, Rstctl1, prstctl1, 16);
-impl_perph_clk!(CTIMER0_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 0);
-impl_perph_clk!(CTIMER1_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 1);
-impl_perph_clk!(CTIMER2_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 2);
-impl_perph_clk!(CTIMER3_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 3);
-impl_perph_clk!(CTIMER4_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 4);
-impl_perph_clk!(DMA0, Clkctl1, pscctl1, Rstctl1, prstctl1, 23);
-impl_perph_clk!(DMA1, Clkctl1, pscctl1, Rstctl1, prstctl1, 24);
-impl_perph_clk!(DMIC0, Clkctl1, pscctl0, Rstctl1, prstctl0, 24);
+impl_perph_clk!(PIMCTL, Clkctl1, pscctl2, Rstctl1, prstctl2, 31, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(ACMP, Clkctl0, pscctl1, Rstctl0, prstctl1, 15, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(ADC0, Clkctl0, pscctl1, Rstctl0, prstctl1, 16, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(CASPER, Clkctl0, pscctl0, Rstctl0, prstctl0, 9, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(CRC, Clkctl1, pscctl1, Rstctl1, prstctl1, 16, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(CTIMER0_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 0, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(CTIMER1_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 1, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(CTIMER2_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 2, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(CTIMER3_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 3, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(CTIMER4_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 4, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(DMA0, Clkctl1, pscctl1, Rstctl1, prstctl1, 23, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(DMA1, Clkctl1, pscctl1, Rstctl1, prstctl1, 24, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(DMIC0, Clkctl1, pscctl0, Rstctl1, prstctl0, 24, UnimplementedConfig, unimpld_cfg);
 
 #[cfg(feature = "_espi")]
-impl_perph_clk!(ESPI, Clkctl0, pscctl1, Rstctl0, prstctl1, 7);
+impl_perph_clk!(ESPI, Clkctl0, pscctl1, Rstctl0, prstctl1, 7, UnimplementedConfig, unimpld_cfg);
 
-impl_perph_clk!(FLEXCOMM0, Clkctl1, pscctl0, Rstctl1, prstctl0, 8);
-impl_perph_clk!(FLEXCOMM1, Clkctl1, pscctl0, Rstctl1, prstctl0, 9);
-impl_perph_clk!(FLEXCOMM14, Clkctl1, pscctl0, Rstctl1, prstctl0, 22);
-impl_perph_clk!(FLEXCOMM15, Clkctl1, pscctl0, Rstctl1, prstctl0, 23);
-impl_perph_clk!(FLEXCOMM2, Clkctl1, pscctl0, Rstctl1, prstctl0, 10);
-impl_perph_clk!(FLEXCOMM3, Clkctl1, pscctl0, Rstctl1, prstctl0, 11);
-impl_perph_clk!(FLEXCOMM4, Clkctl1, pscctl0, Rstctl1, prstctl0, 12);
-impl_perph_clk!(FLEXCOMM5, Clkctl1, pscctl0, Rstctl1, prstctl0, 13);
-impl_perph_clk!(FLEXCOMM6, Clkctl1, pscctl0, Rstctl1, prstctl0, 14);
-impl_perph_clk!(FLEXCOMM7, Clkctl1, pscctl0, Rstctl1, prstctl0, 15);
-impl_perph_clk!(FLEXSPI, Clkctl0, pscctl0, Rstctl0, prstctl0, 16);
-impl_perph_clk!(FREQME, Clkctl1, pscctl1, Rstctl1, prstctl1, 31);
-impl_perph_clk!(HASHCRYPT, Clkctl0, pscctl0, Rstctl0, prstctl0, 10);
-impl_perph_clk!(HSGPIO0, Clkctl1, pscctl1, Rstctl1, prstctl1, 0);
-impl_perph_clk!(HSGPIO1, Clkctl1, pscctl1, Rstctl1, prstctl1, 1);
-impl_perph_clk!(HSGPIO2, Clkctl1, pscctl1, Rstctl1, prstctl1, 2);
-impl_perph_clk!(HSGPIO3, Clkctl1, pscctl1, Rstctl1, prstctl1, 3);
-impl_perph_clk!(HSGPIO4, Clkctl1, pscctl1, Rstctl1, prstctl1, 4);
-impl_perph_clk!(HSGPIO5, Clkctl1, pscctl1, Rstctl1, prstctl1, 5);
-impl_perph_clk!(HSGPIO6, Clkctl1, pscctl1, Rstctl1, prstctl1, 6);
-impl_perph_clk!(HSGPIO7, Clkctl1, pscctl1, Rstctl1, prstctl1, 7);
-impl_perph_clk!(I3C0, Clkctl1, pscctl2, Rstctl1, prstctl2, 16);
-impl_perph_clk!(MRT0, Clkctl1, pscctl2, Rstctl1, prstctl2, 8);
-impl_perph_clk!(MU_A, Clkctl1, pscctl1, Rstctl1, prstctl1, 28);
-impl_perph_clk!(OS_EVENT, Clkctl1, pscctl0, Rstctl1, prstctl0, 27);
-impl_perph_clk!(POWERQUAD, Clkctl0, pscctl0, Rstctl0, prstctl0, 8);
-impl_perph_clk!(PUF, Clkctl0, pscctl0, Rstctl0, prstctl0, 11);
-impl_perph_clk!(RNG, Clkctl0, pscctl0, Rstctl0, prstctl0, 12);
-impl_perph_clk!(RTC, Clkctl1, pscctl2, Rstctl1, prstctl2, 7);
-impl_perph_clk!(SCT0, Clkctl0, pscctl0, Rstctl0, prstctl0, 24);
-impl_perph_clk!(SECGPIO, Clkctl0, pscctl1, Rstctl0, prstctl1, 24);
-impl_perph_clk!(SEMA42, Clkctl1, pscctl1, Rstctl1, prstctl1, 29);
-impl_perph_clk!(USBHSD, Clkctl0, pscctl0, Rstctl0, prstctl0, 21);
-impl_perph_clk!(USBHSH, Clkctl0, pscctl0, Rstctl0, prstctl0, 22);
-impl_perph_clk!(USBPHY, Clkctl0, pscctl0, Rstctl0, prstctl0, 20);
-impl_perph_clk!(USDHC0, Clkctl0, pscctl1, Rstctl0, prstctl1, 2);
-impl_perph_clk!(USDHC1, Clkctl0, pscctl1, Rstctl0, prstctl1, 3);
-impl_perph_clk!(UTICK0, Clkctl0, pscctl2, Rstctl0, prstctl2, 0);
-impl_perph_clk!(WDT0, Clkctl0, pscctl2, Rstctl0, prstctl2, 1);
-impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10);
+impl_perph_clk!(FLEXCOMM0, Clkctl1, pscctl0, Rstctl1, prstctl0, 8, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM1, Clkctl1, pscctl0, Rstctl1, prstctl0, 9, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM14, Clkctl1, pscctl0, Rstctl1, prstctl0, 22, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM15, Clkctl1, pscctl0, Rstctl1, prstctl0, 23, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM2, Clkctl1, pscctl0, Rstctl1, prstctl0, 10, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM3, Clkctl1, pscctl0, Rstctl1, prstctl0, 11, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM4, Clkctl1, pscctl0, Rstctl1, prstctl0, 12, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM5, Clkctl1, pscctl0, Rstctl1, prstctl0, 13, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM6, Clkctl1, pscctl0, Rstctl1, prstctl0, 14, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXCOMM7, Clkctl1, pscctl0, Rstctl1, prstctl0, 15, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FLEXSPI, Clkctl0, pscctl0, Rstctl0, prstctl0, 16, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(FREQME, Clkctl1, pscctl1, Rstctl1, prstctl1, 31, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HASHCRYPT, Clkctl0, pscctl0, Rstctl0, prstctl0, 10, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HSGPIO0, Clkctl1, pscctl1, Rstctl1, prstctl1, 0, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HSGPIO1, Clkctl1, pscctl1, Rstctl1, prstctl1, 1, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HSGPIO2, Clkctl1, pscctl1, Rstctl1, prstctl1, 2, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HSGPIO3, Clkctl1, pscctl1, Rstctl1, prstctl1, 3, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HSGPIO4, Clkctl1, pscctl1, Rstctl1, prstctl1, 4, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HSGPIO5, Clkctl1, pscctl1, Rstctl1, prstctl1, 5, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HSGPIO6, Clkctl1, pscctl1, Rstctl1, prstctl1, 6, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HSGPIO7, Clkctl1, pscctl1, Rstctl1, prstctl1, 7, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(I3C0, Clkctl1, pscctl2, Rstctl1, prstctl2, 16, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(MRT0, Clkctl1, pscctl2, Rstctl1, prstctl2, 8, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(MU_A, Clkctl1, pscctl1, Rstctl1, prstctl1, 28, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(OS_EVENT, Clkctl1, pscctl0, Rstctl1, prstctl0, 27, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(POWERQUAD, Clkctl0, pscctl0, Rstctl0, prstctl0, 8, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(PUF, Clkctl0, pscctl0, Rstctl0, prstctl0, 11, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(RNG, Clkctl0, pscctl0, Rstctl0, prstctl0, 12, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(RTC, Clkctl1, pscctl2, Rstctl1, prstctl2, 7, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(SCT0, Clkctl0, pscctl0, Rstctl0, prstctl0, 24, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(SECGPIO, Clkctl0, pscctl1, Rstctl0, prstctl1, 24, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(SEMA42, Clkctl1, pscctl1, Rstctl1, prstctl1, 29, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(USBHSD, Clkctl0, pscctl0, Rstctl0, prstctl0, 21, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(USBHSH, Clkctl0, pscctl0, Rstctl0, prstctl0, 22, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(USBPHY, Clkctl0, pscctl0, Rstctl0, prstctl0, 20, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(USDHC0, Clkctl0, pscctl1, Rstctl0, prstctl1, 2, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(USDHC1, Clkctl0, pscctl1, Rstctl0, prstctl1, 3, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(UTICK0, Clkctl0, pscctl2, Rstctl0, prstctl2, 0, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(WDT0, Clkctl0, pscctl2, Rstctl0, prstctl2, 1, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, UnimplementedConfig, unimpld_cfg);
 
 // Diagrams without homes (yet)
 //

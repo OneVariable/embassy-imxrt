@@ -10,7 +10,7 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_hal_internal::{impl_peripheral, Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::clocks::enable_and_reset;
+use crate::clocks::{enable_and_reset, UnimplementedConfig};
 use crate::interrupt::typelevel::Binding;
 use crate::iopctl::{DriveMode, DriveStrength, Function, Inverter, IopctlPin, Pull, SlewRate};
 use crate::pac::adc0;
@@ -121,7 +121,7 @@ impl<const N: usize> Adc<'_, N> {
             .write(|w| unsafe { w.div().bits(0x0).halt().clear_bit() });
         while clkctl0.adc0fclkdiv().read().reqflag().bit_is_set() {}
 
-        enable_and_reset::<ADC0>();
+        enable_and_reset::<ADC0>(&UnimplementedConfig);
     }
 
     fn configure_adc(&mut self, config: Config) {

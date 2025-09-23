@@ -13,6 +13,7 @@ use storage_bus::nor::{
 };
 
 use crate::clocks::enable_and_reset;
+use crate::clocks::UnimplementedConfig;
 use crate::iopctl::IopctlPin as Pin;
 use crate::pac::flexspi::ahbcr::*;
 use crate::pac::flexspi::flshcr1::*;
@@ -1160,7 +1161,7 @@ impl FlexSpiConfigurationPort {
         let regs = self.info.regs;
 
         // Enable Clock and deassert Reset
-        enable_and_reset::<peripherals::FLEXSPI>();
+        enable_and_reset::<peripherals::FLEXSPI>(&UnimplementedConfig);
 
         let sysctl_reg = unsafe { &*crate::pac::Sysctl0::ptr() };
         sysctl_reg
