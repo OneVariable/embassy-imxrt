@@ -161,7 +161,7 @@ macro_rules! impl_flexcomm {
                             // SAFETY: unsafe only used for .bits() call
                             unsafe { w.mult().bits(0) });
 
-                        enable_and_reset::<[<FLEXCOMM $idx>]>(&crate::clocks::UnimplementedConfig);
+                        enable_and_reset::<[<FLEXCOMM $idx>]>(&crate::clocks::FlexcommConfig {});
 
                         FlexcommRef::new::<Self>()
                     }
@@ -227,7 +227,7 @@ impl FlexcommLowLevel for crate::peripherals::FLEXCOMM14 {
                 // SAFETY: unsafe only used for .bits() call
                 unsafe { w.mult().bits(0) });
 
-        enable_and_reset::<FLEXCOMM14>(&crate::clocks::UnimplementedConfig);
+        enable_and_reset::<FLEXCOMM14>(&crate::clocks::FlexcommConfig {});
 
         FlexcommRef::new::<Self>()
     }
@@ -284,7 +284,7 @@ impl FlexcommLowLevel for crate::peripherals::FLEXCOMM15 {
                 // SAFETY: unsafe only used for .bits() call
                 unsafe { w.mult().bits(0) });
 
-        enable_and_reset::<FLEXCOMM15>(&crate::clocks::UnimplementedConfig);
+        enable_and_reset::<FLEXCOMM15>(&crate::clocks::FlexcommConfig {});
 
         FlexcommRef::new::<Self>()
     }

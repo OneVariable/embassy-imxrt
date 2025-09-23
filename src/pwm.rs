@@ -29,7 +29,7 @@
 // The timer is reset by the match register that is configured to set the PWM cycle length.
 // When the timer is reset to zero, all currently HIGH match outputs configured as PWM outputs are cleared
 
-use crate::clocks::UnimplementedConfig;
+use crate::clocks::Sct0Config;
 /// include pac definitions for instancing
 use crate::pac;
 /// include the traits that are implemented + exposed via this implementation
@@ -222,7 +222,7 @@ impl sealed::SCTimer for crate::peripherals::SCT0 {
             }
         }
 
-        enable_and_reset::<SCT0>(&UnimplementedConfig);
+        enable_and_reset::<SCT0>(&Sct0Config {});
     }
 
     fn get_clock_rate(clock: self::SCTClockSource) -> Hertz {

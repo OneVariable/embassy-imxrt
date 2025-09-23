@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use embassy_hal_internal::{Peri, PeripheralType};
 
-use crate::clocks::{enable_and_reset, SysconPeripheral, UnimplementedConfig};
+use crate::clocks::{enable_and_reset, SysconPeripheral, WdtConfig};
 use crate::peripherals::{WDT0, WDT1};
 
 /// Windowed watchdog timer (WWDT) driver.
@@ -53,7 +53,7 @@ impl SealedInstance for crate::peripherals::WDT0 {
         let sysctl0 = unsafe { &*crate::pac::Sysctl0::ptr() };
         sysctl0.starten0_set().write(|w| w.wdt0().set_bit());
 
-        enable_and_reset::<WDT0>(&UnimplementedConfig);
+        enable_and_reset::<WDT0>(&WdtConfig {});
     }
 }
 impl Instance for crate::peripherals::WDT0 {}
@@ -73,7 +73,7 @@ impl SealedInstance for crate::peripherals::WDT1 {
         let clkctl1 = unsafe { &*crate::pac::Clkctl1::ptr() };
         clkctl1.wdt1fclksel().modify(|_, w| w.sel().lposc());
 
-        enable_and_reset::<WDT1>(&UnimplementedConfig);
+        enable_and_reset::<WDT1>(&WdtConfig {});
     }
 }
 impl Instance for crate::peripherals::WDT1 {}
