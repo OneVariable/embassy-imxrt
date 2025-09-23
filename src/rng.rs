@@ -8,7 +8,7 @@ use embassy_futures::block_on;
 use embassy_sync::waitqueue::AtomicWaker;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::clocks::{enable_and_reset, SysconPeripheral, UnimplementedConfig};
+use crate::clocks::{enable_and_reset, SysconPeripheral, NoConfig};
 use crate::interrupt::typelevel::Interrupt;
 use crate::{interrupt, peripherals, Peri, PeripheralType};
 
@@ -108,13 +108,13 @@ fn sw_entropy_test(entropy: &[u32]) -> Result<(), Error> {
 
 impl<'d> Rng<'d> {
     /// Create a new RNG driver.
-    pub fn new<T: Instance + SysconPeripheral<SysconPeriphConfig = UnimplementedConfig>>(
+    pub fn new<T: Instance + SysconPeripheral<SysconPeriphConfig = NoConfig>>(
         _inner: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self
     where
     {
-        enable_and_reset::<T>(&UnimplementedConfig);
+        enable_and_reset::<T>(&NoConfig);
 
         let mut random = Self {
             info: T::info(),

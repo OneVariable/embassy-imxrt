@@ -491,7 +491,7 @@ impl ClockOperator<'_> {
     ///                   ▲
     ///                   │
     ///                Enable
-    ///            OSC23KHZCTL0[0]
+    ///            OSC32KHZCTL0[0]
     /// ```
     fn ensure_32kclk_active(&mut self) -> Result<u32, ClockError> {
         if !self.clocks._32k_clk.enabled {
@@ -981,6 +981,10 @@ fn unimpld_cfg(_cfg: &UnimplementedConfig) {
     todo!()
 }
 
+/// Used when a clock has no upstream clocks that need to be configured or verified.
+pub struct NoConfig;
+fn no_cfg(_cfg: &NoConfig) {}
+
 macro_rules! impl_perph_clk {
     (
         $peripheral:ident,
@@ -1039,23 +1043,30 @@ macro_rules! impl_perph_clk {
 // impl_perph_clk!(ROM_CTL_128KB, Clkctl0, pscctl0, Rstctl0, prstctl0, 2, UnimplementedConfig, unimpld_cfg);
 // impl_perph_clk!(USBHS_SRAM, Clkctl0, pscctl0, Rstctl0, prstctl0, 23, UnimplementedConfig, unimpld_cfg);
 
-impl_perph_clk!(PIMCTL, Clkctl1, pscctl2, Rstctl1, prstctl2, 31, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(PIMCTL, Clkctl1, pscctl2, Rstctl1, prstctl2, 31, NoConfig, no_cfg);
+// TODO: ACMP DOES have upstream clock configuration required
 impl_perph_clk!(ACMP, Clkctl0, pscctl1, Rstctl0, prstctl1, 15, UnimplementedConfig, unimpld_cfg);
+// TODO: ADC0 DOES have upstream clock configuration required
 impl_perph_clk!(ADC0, Clkctl0, pscctl1, Rstctl0, prstctl1, 16, UnimplementedConfig, unimpld_cfg);
+// TODO: Ensure that CASPER SRAM is also enabled prior to starting CASPER?
 impl_perph_clk!(CASPER, Clkctl0, pscctl0, Rstctl0, prstctl0, 9, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(CRC, Clkctl1, pscctl1, Rstctl1, prstctl1, 16, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(CRC, Clkctl1, pscctl1, Rstctl1, prstctl1, 16, NoConfig, no_cfg);
+// TODO: (S)CTIMERn have CLKSEL/CLKDIV registers that require setting
 impl_perph_clk!(CTIMER0_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 0, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(CTIMER1_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 1, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(CTIMER2_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 2, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(CTIMER3_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 3, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(CTIMER4_COUNT_CHANNEL0, Clkctl1, pscctl2, Rstctl1, prstctl2, 4, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(DMA0, Clkctl1, pscctl1, Rstctl1, prstctl1, 23, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(DMA1, Clkctl1, pscctl1, Rstctl1, prstctl1, 24, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(DMIC0, Clkctl1, pscctl0, Rstctl1, prstctl0, 24, UnimplementedConfig, unimpld_cfg);
 
+impl_perph_clk!(DMA0, Clkctl1, pscctl1, Rstctl1, prstctl1, 23, NoConfig, no_cfg);
+impl_perph_clk!(DMA1, Clkctl1, pscctl1, Rstctl1, prstctl1, 24, NoConfig, no_cfg);
+// TODO: DMIC DOES have upstream clock configuration required
+impl_perph_clk!(DMIC0, Clkctl1, pscctl0, Rstctl1, prstctl0, 24, UnimplementedConfig, unimpld_cfg);
+// TODO: ESPI DOES have upstream clock configuration required
 #[cfg(feature = "_espi")]
 impl_perph_clk!(ESPI, Clkctl0, pscctl1, Rstctl0, prstctl1, 7, UnimplementedConfig, unimpld_cfg);
 
+// TODO: ALL of the FLEXCOMMn peripherals have upstream configuration required
 impl_perph_clk!(FLEXCOMM0, Clkctl1, pscctl0, Rstctl1, prstctl0, 8, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(FLEXCOMM1, Clkctl1, pscctl0, Rstctl1, prstctl0, 9, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(FLEXCOMM14, Clkctl1, pscctl0, Rstctl1, prstctl0, 22, UnimplementedConfig, unimpld_cfg);
@@ -1066,34 +1077,51 @@ impl_perph_clk!(FLEXCOMM4, Clkctl1, pscctl0, Rstctl1, prstctl0, 12, Unimplemente
 impl_perph_clk!(FLEXCOMM5, Clkctl1, pscctl0, Rstctl1, prstctl0, 13, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(FLEXCOMM6, Clkctl1, pscctl0, Rstctl1, prstctl0, 14, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(FLEXCOMM7, Clkctl1, pscctl0, Rstctl1, prstctl0, 15, UnimplementedConfig, unimpld_cfg);
+
+// TODO: FLEXSPI has RAM that needs to be configured
 impl_perph_clk!(FLEXSPI, Clkctl0, pscctl0, Rstctl0, prstctl0, 16, UnimplementedConfig, unimpld_cfg);
+// TODO: FREQME has reference clock selection that needs to be configured
 impl_perph_clk!(FREQME, Clkctl1, pscctl1, Rstctl1, prstctl1, 31, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HASHCRYPT, Clkctl0, pscctl0, Rstctl0, prstctl0, 10, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HSGPIO0, Clkctl1, pscctl1, Rstctl1, prstctl1, 0, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HSGPIO1, Clkctl1, pscctl1, Rstctl1, prstctl1, 1, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HSGPIO2, Clkctl1, pscctl1, Rstctl1, prstctl1, 2, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HSGPIO3, Clkctl1, pscctl1, Rstctl1, prstctl1, 3, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HSGPIO4, Clkctl1, pscctl1, Rstctl1, prstctl1, 4, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HSGPIO5, Clkctl1, pscctl1, Rstctl1, prstctl1, 5, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HSGPIO6, Clkctl1, pscctl1, Rstctl1, prstctl1, 6, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(HSGPIO7, Clkctl1, pscctl1, Rstctl1, prstctl1, 7, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(HASHCRYPT, Clkctl0, pscctl0, Rstctl0, prstctl0, 10, NoConfig, no_cfg);
+impl_perph_clk!(HSGPIO0, Clkctl1, pscctl1, Rstctl1, prstctl1, 0, NoConfig, no_cfg);
+impl_perph_clk!(HSGPIO1, Clkctl1, pscctl1, Rstctl1, prstctl1, 1, NoConfig, no_cfg);
+impl_perph_clk!(HSGPIO2, Clkctl1, pscctl1, Rstctl1, prstctl1, 2, NoConfig, no_cfg);
+impl_perph_clk!(HSGPIO3, Clkctl1, pscctl1, Rstctl1, prstctl1, 3, NoConfig, no_cfg);
+impl_perph_clk!(HSGPIO4, Clkctl1, pscctl1, Rstctl1, prstctl1, 4, NoConfig, no_cfg);
+impl_perph_clk!(HSGPIO5, Clkctl1, pscctl1, Rstctl1, prstctl1, 5, NoConfig, no_cfg);
+impl_perph_clk!(HSGPIO6, Clkctl1, pscctl1, Rstctl1, prstctl1, 6, NoConfig, no_cfg);
+impl_perph_clk!(HSGPIO7, Clkctl1, pscctl1, Rstctl1, prstctl1, 7, NoConfig, no_cfg);
+// TODO: I3C DOES have clock div/sel requirements
 impl_perph_clk!(I3C0, Clkctl1, pscctl2, Rstctl1, prstctl2, 16, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(MRT0, Clkctl1, pscctl2, Rstctl1, prstctl2, 8, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(MU_A, Clkctl1, pscctl1, Rstctl1, prstctl1, 28, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(MRT0, Clkctl1, pscctl2, Rstctl1, prstctl2, 8, NoConfig, no_cfg);
+impl_perph_clk!(MU_A, Clkctl1, pscctl1, Rstctl1, prstctl1, 28, NoConfig, no_cfg);
+// TODO: OS Event Timer has clock selection requirements
 impl_perph_clk!(OS_EVENT, Clkctl1, pscctl0, Rstctl1, prstctl0, 27, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(POWERQUAD, Clkctl0, pscctl0, Rstctl0, prstctl0, 8, UnimplementedConfig, unimpld_cfg);
+// TODO: As far as I can tell POWERQUAD doesn't require any additional clocking/setup?
+// I'm not super confident about that, but we don't support it yet anyway
+impl_perph_clk!(POWERQUAD, Clkctl0, pscctl0, Rstctl0, prstctl0, 8, NoConfig, no_cfg);
+// TODO: PUF has it's own SRAM that needs to be enabled first
 impl_perph_clk!(PUF, Clkctl0, pscctl0, Rstctl0, prstctl0, 11, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(RNG, Clkctl0, pscctl0, Rstctl0, prstctl0, 12, UnimplementedConfig, unimpld_cfg);
+// NOTE: "RNG" *appears* to be the TRNG, as far as I can tell.
+impl_perph_clk!(RNG, Clkctl0, pscctl0, Rstctl0, prstctl0, 12, NoConfig, no_cfg);
+// TODO: We need to ensure the RTC oscillator is enabled (I think)
 impl_perph_clk!(RTC, Clkctl1, pscctl2, Rstctl1, prstctl2, 7, UnimplementedConfig, unimpld_cfg);
+// TODO: SCT has pin/clock selection for feeding it
 impl_perph_clk!(SCT0, Clkctl0, pscctl0, Rstctl0, prstctl0, 24, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(SECGPIO, Clkctl0, pscctl1, Rstctl0, prstctl1, 24, UnimplementedConfig, unimpld_cfg);
-impl_perph_clk!(SEMA42, Clkctl1, pscctl1, Rstctl1, prstctl1, 29, UnimplementedConfig, unimpld_cfg);
+impl_perph_clk!(SECGPIO, Clkctl0, pscctl1, Rstctl0, prstctl1, 24, NoConfig, no_cfg);
+impl_perph_clk!(SEMA42, Clkctl1, pscctl1, Rstctl1, prstctl1, 29, NoConfig, no_cfg);
+// TODO: USBHSD (Device) DOES have clock setup requirements, and maybe SRAM requirements
 impl_perph_clk!(USBHSD, Clkctl0, pscctl0, Rstctl0, prstctl0, 21, UnimplementedConfig, unimpld_cfg);
+// TODO: USBHSH (Host) DOES have clock setup requirements, and maybe SRAM requirements
 impl_perph_clk!(USBHSH, Clkctl0, pscctl0, Rstctl0, prstctl0, 22, UnimplementedConfig, unimpld_cfg);
+// TODO: USBPHY has a lot of clock setup required
 impl_perph_clk!(USBPHY, Clkctl0, pscctl0, Rstctl0, prstctl0, 20, UnimplementedConfig, unimpld_cfg);
+// TODO: USDHCn have clock and RAM setup requirements
 impl_perph_clk!(USDHC0, Clkctl0, pscctl1, Rstctl0, prstctl1, 2, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(USDHC1, Clkctl0, pscctl1, Rstctl0, prstctl1, 3, UnimplementedConfig, unimpld_cfg);
+// TODO: UTICK0 (Micro-Tick) has clock selection requirements
 impl_perph_clk!(UTICK0, Clkctl0, pscctl2, Rstctl0, prstctl2, 0, UnimplementedConfig, unimpld_cfg);
+// TODO: WDTn has clock selection requirements
 impl_perph_clk!(WDT0, Clkctl0, pscctl2, Rstctl0, prstctl2, 1, UnimplementedConfig, unimpld_cfg);
 impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, UnimplementedConfig, unimpld_cfg);
 

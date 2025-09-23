@@ -10,7 +10,7 @@ use embassy_hal_internal::impl_peripheral;
 use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::clocks::{enable_and_reset, UnimplementedConfig};
+use crate::clocks::{enable_and_reset, NoConfig};
 use crate::dma::channel::Channel;
 use crate::peripherals::{self, DMA0};
 use crate::{interrupt, Peri, PeripheralType};
@@ -109,7 +109,7 @@ pub(crate) fn init() {
     let sysctl0 = unsafe { crate::pac::Sysctl0::steal() };
     let dmactl0 = unsafe { crate::pac::Dma0::steal() };
 
-    enable_and_reset::<DMA0>(&UnimplementedConfig);
+    enable_and_reset::<DMA0>(&NoConfig);
 
     // Enable DMA controller
     dmactl0.ctrl().modify(|_, w| w.enable().set_bit());

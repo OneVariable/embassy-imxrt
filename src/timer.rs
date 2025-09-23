@@ -7,7 +7,7 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
 
-use crate::clocks::{clock_freq, enable_and_reset, SysconPeripheral, UnimplementedConfig};
+use crate::clocks::{clock_freq, enable_and_reset, NoConfig, SysconPeripheral, UnimplementedConfig};
 use crate::iopctl::{DriveMode, DriveStrength, Inverter, IopctlPin as Pin, Pull, SlewRate};
 use crate::pac::Clkctl1;
 use crate::pwm::{CentiPercent, Hertz, MicroSeconds};
@@ -1076,7 +1076,7 @@ pub fn init() {
     enable_and_reset::<peripherals::CTIMER2_COUNT_CHANNEL0>(&UnimplementedConfig);
     enable_and_reset::<peripherals::CTIMER3_COUNT_CHANNEL0>(&UnimplementedConfig);
     enable_and_reset::<peripherals::CTIMER4_COUNT_CHANNEL0>(&UnimplementedConfig);
-    enable_and_reset::<peripherals::PIMCTL>(&UnimplementedConfig);
+    enable_and_reset::<peripherals::PIMCTL>(&NoConfig);
 
     // • Select a clock source for the CTIMER using the appropriate CT32BIT0FCLKSEL
     // register (see Section 4.5.2.55 through Section 4.5.2.59).

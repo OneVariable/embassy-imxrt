@@ -10,7 +10,7 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 use sealed::Sealed;
 
-use crate::clocks::{enable_and_reset, UnimplementedConfig};
+use crate::clocks::{enable_and_reset, NoConfig};
 use crate::iopctl::IopctlPin;
 pub use crate::iopctl::{AnyPin, DriveMode, DriveStrength, Function, Inverter, Pull, SlewRate};
 use crate::{interrupt, peripherals, Peri, PeripheralType};
@@ -109,14 +109,14 @@ fn irq_handler(port_wakers: &[Option<&PortWaker>]) {
 /// Note: GPIO port clocks are initialized in the clocks module.
 pub(crate) fn init() {
     // Enable GPIO clocks
-    enable_and_reset::<peripherals::HSGPIO0>(&UnimplementedConfig);
-    enable_and_reset::<peripherals::HSGPIO1>(&UnimplementedConfig);
-    enable_and_reset::<peripherals::HSGPIO2>(&UnimplementedConfig);
-    enable_and_reset::<peripherals::HSGPIO3>(&UnimplementedConfig);
-    enable_and_reset::<peripherals::HSGPIO4>(&UnimplementedConfig);
-    enable_and_reset::<peripherals::HSGPIO5>(&UnimplementedConfig);
-    enable_and_reset::<peripherals::HSGPIO6>(&UnimplementedConfig);
-    enable_and_reset::<peripherals::HSGPIO7>(&UnimplementedConfig);
+    enable_and_reset::<peripherals::HSGPIO0>(&NoConfig);
+    enable_and_reset::<peripherals::HSGPIO1>(&NoConfig);
+    enable_and_reset::<peripherals::HSGPIO2>(&NoConfig);
+    enable_and_reset::<peripherals::HSGPIO3>(&NoConfig);
+    enable_and_reset::<peripherals::HSGPIO4>(&NoConfig);
+    enable_and_reset::<peripherals::HSGPIO5>(&NoConfig);
+    enable_and_reset::<peripherals::HSGPIO6>(&NoConfig);
+    enable_and_reset::<peripherals::HSGPIO7>(&NoConfig);
 
     // Enable INTA
     interrupt::GPIO_INTA.unpend();

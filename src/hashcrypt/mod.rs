@@ -5,7 +5,7 @@ use embassy_hal_internal::PeripheralType;
 use embassy_sync::waitqueue::AtomicWaker;
 use hasher::Hasher;
 
-use crate::clocks::{enable_and_reset, UnimplementedConfig};
+use crate::clocks::{enable_and_reset, NoConfig};
 use crate::peripherals::{DMA0_CH30, HASHCRYPT};
 use crate::{dma, interrupt, pac, Peri};
 
@@ -99,7 +99,7 @@ impl From<Algorithm> for u8 {
 impl<'d, M: Mode> Hashcrypt<'d, M> {
     /// Instantiate new Hashcrypt peripheral
     fn new_inner<T: Instance>(_peripheral: Peri<'d, T>, dma_ch: Option<dma::channel::Channel<'d>>) -> Self {
-        enable_and_reset::<HASHCRYPT>(&UnimplementedConfig);
+        enable_and_reset::<HASHCRYPT>(&NoConfig);
 
         Self {
             _ownership: PhantomData,
