@@ -10,10 +10,18 @@ const FLEXCOMM_INSTANCES: usize = 8;
 
 #[derive(Debug, Clone, Default)]
 pub struct Clocks {
+    /// "LPOSC", a very low power (but less accurate, +/- 10%) clock
+    /// running at 1MHz
     pub _1m_lposc: StaticClock<1_000_000>,
+    /// "SFRO", a higher power, +/- 1%, 16-MHz internal oscillator clock
+    /// source (note: Datasheet says +/-3%, but reference manual mentions
+    /// +/- 1%?)
     pub _16m_irc: StaticClock<16_000_000>,
+
     pub _32k_clk: StaticClock<32_768>,
     pub _32k_wake_clk: StaticClock<32_768>,
+    /// "FFRO", a higher power, +/- 1%, 48- or 60-MHz internal oscillator
+    /// clock source
     pub _48_60m_irc: Option<u32>,
     pub aux0_pll_clk: Option<u32>,
     pub aux1_pll_clk: Option<u32>,
@@ -26,8 +34,8 @@ pub struct Clocks {
     // --- These clocks have not been configured yet ---
     //
     // pub dsp_main_clk: Option<u32>,
-    // pub frg_clk_n: [Option<u32>; FLEXCOMM_INSTANCES],
     // pub audio_pll_clk: Option<u32>,
+    // pub frg_clk_n: [Option<u32>; FLEXCOMM_INSTANCES],
     // pub frg_clk_14: Option<u32>,
     // pub frg_clk_15: Option<u32>,
     // pub frg_pll: Option<u32>,
@@ -407,7 +415,6 @@ impl ClockOperator<'_> {
             // Select the 48/60m_irc clock speed
             self.clkctl0.ffroctl1().write(|w| w.update().update_safe_mode());
             let (variant, freq) = match self.config._48_60m_irc_select {
-                // TODO(AJM): switch to demand-based model, skip this check?
                 _48_60mIrcSelect::Off => {
                     return Err(ClockError::bad_config("48/60m_irc required but disabled"));
                 }
@@ -462,7 +469,6 @@ impl ClockOperator<'_> {
     /// ```
     fn ensure_32kclk_active(&mut self) -> Result<u32, ClockError> {
         if !self.clocks._32k_clk.enabled {
-            // TODO: AJM
             if !self.config.enable_32k_clk {
                 return Err(ClockError::bad_config("32k_clk required but not enabled"));
             }
@@ -479,6 +485,9 @@ impl ClockOperator<'_> {
     /// > MHz or 48/60 MHz clocks are not appropriate, use the PLL to boost the input frequency.
     /// > The PLL can be set up by calling an API supplied by NXP Semiconductors. Also see
     /// > Section 4.6.1 “PLLs”and Chapter 6 “RT6xx Power APIs”.
+    ///
+    /// Returns `Ok(None)` if the main PLL is disabled.
+    /// Returns the frequency and MainPll selection if the main PLL is enabled
     fn setup_main_pll(&mut self, sel: Option<MainPll>) -> Result<Option<(u32, MainPll)>, ClockError> {
         // Turn off the PLL if it was running
         //
@@ -504,9 +513,6 @@ impl ClockOperator<'_> {
         //             SYSPLL0CLKSEL[2:0]
         let Some(sel) = sel else {
             self.clkctl0.syspll0clksel().write(|w| w.sel().none());
-
-            // TODO(AJM): Do we need to set `clocks` to reflect the main PLL and downstream
-            // PDF0..=3 are disabled/impossible to set?
             return Ok(None);
         };
 
