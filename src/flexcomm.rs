@@ -4,7 +4,9 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use paste::paste;
 
-use crate::clocks::{disable, enable_and_reset, SysconPeripheral};
+use crate::clocks::{
+    disable, enable_and_reset, FlexcommConfig, FlexcommFclkSel, FlexcommFrgSel, FlexcommInstance, SysconPeripheral,
+};
 use crate::peripherals::{
     FLEXCOMM0, FLEXCOMM1, FLEXCOMM14, FLEXCOMM15, FLEXCOMM2, FLEXCOMM3, FLEXCOMM4, FLEXCOMM5, FLEXCOMM6, FLEXCOMM7,
 };
@@ -25,20 +27,51 @@ pub enum Clock {
     /// MASTER
     Master,
 
-    /// FCn_FRG with Main clock source
-    FcnFrgMain,
-
-    /// FCn_FRG with Pll clock source
-    FcnFrgPll,
-
-    /// FCn_FRG with Sfro clock source
-    FcnFrgSfro,
-
-    /// FCn_FRG with Ffro clock source
-    FcnFrgFfro,
-
     /// disabled
     None,
+
+    Custom {
+        frg_sel: FlexcommFrgSel,
+        fclk_sel: FlexcommFclkSel,
+        mul: u8,
+    },
+}
+
+impl Clock {
+    fn into_config(&self, instance: usize) -> FlexcommConfig {
+        let instance = match instance {
+            0 => FlexcommInstance::Flexcomm0,
+            1 => FlexcommInstance::Flexcomm1,
+            2 => FlexcommInstance::Flexcomm2,
+            3 => FlexcommInstance::Flexcomm3,
+            4 => FlexcommInstance::Flexcomm4,
+            5 => FlexcommInstance::Flexcomm5,
+            6 => FlexcommInstance::Flexcomm6,
+            7 => FlexcommInstance::Flexcomm7,
+            _ => unimplemented!(),
+        };
+        let sel = match self {
+            Clock::Sfro => FlexcommFclkSel::SfroClk,
+            Clock::Ffro => FlexcommFclkSel::FfroClk,
+            Clock::AudioPll => FlexcommFclkSel::AudioPllClk,
+            Clock::Master => FlexcommFclkSel::MasterClk,
+            Clock::None => FlexcommFclkSel::None,
+            Clock::Custom { frg_sel, fclk_sel, mul } => {
+                return FlexcommConfig {
+                    frg_clk_sel: *frg_sel,
+                    fc_clk_sel: *fclk_sel,
+                    instance,
+                    mult: *mul,
+                };
+            }
+        };
+        FlexcommConfig {
+            frg_clk_sel: FlexcommFrgSel::None,
+            fc_clk_sel: sel,
+            instance,
+            mult: 0,
+        }
+    }
 }
 
 /// do not allow implementation of trait outside this mod
@@ -129,40 +162,9 @@ macro_rules! impl_flexcomm {
                         }
                     }
 
-                    fn enable(clk: Clock) -> FlexcommRef {
-                        // SAFETY: safe from single executor
-                        let clkctl1 = unsafe { crate::pac::Clkctl1::steal() };
-
-                        clkctl1.flexcomm($idx).fcfclksel().write(|w| match clk {
-                            Clock::Sfro => w.sel().sfro_clk(),
-                            Clock::Ffro => w.sel().ffro_clk(),
-                            Clock::AudioPll => w.sel().audio_pll_clk(),
-                            Clock::Master => w.sel().master_clk(),
-                            Clock::FcnFrgMain => w.sel().fcn_frg_clk(),
-                            Clock::FcnFrgPll => w.sel().fcn_frg_clk(),
-                            Clock::FcnFrgSfro => w.sel().fcn_frg_clk(),
-                            Clock::FcnFrgFfro => w.sel().fcn_frg_clk(),
-                            Clock::None => w.sel().none(), // no clock? throw an error?
-                        });
-
-                        clkctl1.flexcomm($idx).frgclksel().write(|w| match clk {
-                            Clock::FcnFrgMain => w.sel().main_clk(),
-                            Clock::FcnFrgPll => w.sel().frg_pll_clk(),
-                            Clock::FcnFrgSfro => w.sel().sfro_clk(),
-                            Clock::FcnFrgFfro => w.sel().ffro_clk(),
-                            _ => w.sel().none(),    // not using frg ...
-                        });
-
-                        // todo: add support for frg div/mult
-                        clkctl1
-                            .flexcomm($idx)
-                            .frgctl()
-                            .write(|w|
-                            // SAFETY: unsafe only used for .bits() call
-                            unsafe { w.mult().bits(0) });
-
-                        enable_and_reset::<[<FLEXCOMM $idx>]>(&crate::clocks::FlexcommConfig {});
-
+                    fn enable(cfg: Clock) -> FlexcommRef {
+                        let config = cfg.into_config($idx);
+                        enable_and_reset::<[<FLEXCOMM $idx>]>(&config).unwrap();
                         FlexcommRef::new::<Self>()
                     }
 
@@ -207,18 +209,11 @@ impl FlexcommLowLevel for crate::peripherals::FLEXCOMM14 {
             Clock::Ffro => w.sel().ffro_clk(),
             Clock::AudioPll => w.sel().audio_pll_clk(),
             Clock::Master => w.sel().master_clk(),
-            Clock::FcnFrgMain => w.sel().fcn_frg_clk(),
-            Clock::FcnFrgPll => w.sel().fcn_frg_clk(),
-            Clock::FcnFrgSfro => w.sel().fcn_frg_clk(),
-            Clock::FcnFrgFfro => w.sel().fcn_frg_clk(),
             Clock::None => w.sel().none(), // no clock? throw an error?
+            _ => todo!(),
         });
 
         clkctl1.frg14clksel().write(|w| match clk {
-            Clock::FcnFrgMain => w.sel().main_clk(),
-            Clock::FcnFrgPll => w.sel().frg_pll_clk(),
-            Clock::FcnFrgSfro => w.sel().sfro_clk(),
-            Clock::FcnFrgFfro => w.sel().ffro_clk(),
             _ => w.sel().none(), // not using frg ...
         });
 
@@ -227,7 +222,7 @@ impl FlexcommLowLevel for crate::peripherals::FLEXCOMM14 {
                 // SAFETY: unsafe only used for .bits() call
                 unsafe { w.mult().bits(0) });
 
-        enable_and_reset::<FLEXCOMM14>(&crate::clocks::FlexcommConfig {});
+        enable_and_reset::<FLEXCOMM14>(&crate::clocks::FlexcommConfig14 {}).unwrap();
 
         FlexcommRef::new::<Self>()
     }
@@ -266,17 +261,18 @@ impl FlexcommLowLevel for crate::peripherals::FLEXCOMM15 {
             Clock::Ffro => w.sel().ffro_clk(),
             Clock::AudioPll => w.sel().audio_pll_clk(),
             Clock::Master => w.sel().master_clk(),
-            Clock::FcnFrgMain => w.sel().fcn_frg_clk(),
-            Clock::FcnFrgPll => w.sel().fcn_frg_clk(),
-            Clock::FcnFrgSfro => w.sel().fcn_frg_clk(),
-            Clock::FcnFrgFfro => w.sel().fcn_frg_clk(),
+            // Clock::FcnFrgMain => w.sel().fcn_frg_clk(),
+            // Clock::FcnFrgPll => w.sel().fcn_frg_clk(),
+            // Clock::FcnFrgSfro => w.sel().fcn_frg_clk(),
+            // Clock::FcnFrgFfro => w.sel().fcn_frg_clk(),
             Clock::None => w.sel().none(), // no clock? throw an error?
+            _ => todo!(),
         });
         clkctl1.frg15clksel().write(|w| match clk {
-            Clock::FcnFrgMain => w.sel().main_clk(),
-            Clock::FcnFrgPll => w.sel().frg_pll_clk(),
-            Clock::FcnFrgSfro => w.sel().sfro_clk(),
-            Clock::FcnFrgFfro => w.sel().ffro_clk(),
+            // Clock::FcnFrgMain => w.sel().main_clk(),
+            // Clock::FcnFrgPll => w.sel().frg_pll_clk(),
+            // Clock::FcnFrgSfro => w.sel().sfro_clk(),
+            // Clock::FcnFrgFfro => w.sel().ffro_clk(),
             _ => w.sel().none(), // not using frg ...
         });
         // todo: add support for frg div/mult
@@ -284,7 +280,7 @@ impl FlexcommLowLevel for crate::peripherals::FLEXCOMM15 {
                 // SAFETY: unsafe only used for .bits() call
                 unsafe { w.mult().bits(0) });
 
-        enable_and_reset::<FLEXCOMM15>(&crate::clocks::FlexcommConfig {});
+        enable_and_reset::<FLEXCOMM15>(&crate::clocks::FlexcommConfig15 {}).unwrap();
 
         FlexcommRef::new::<Self>()
     }
