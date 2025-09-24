@@ -29,36 +29,11 @@
 // The timer is reset by the match register that is configured to set the PWM cycle length.
 // When the timer is reset to zero, all currently HIGH match outputs configured as PWM outputs are cleared
 
-use crate::clocks::Sct0Config;
+use crate::clocks::{disable, SCTClockSource, Sct0Config};
 /// include pac definitions for instancing
 use crate::pac;
 /// include the traits that are implemented + exposed via this implementation
 use crate::Peri;
-
-/// clock source indicator for selecting while powering on the `SCTimer`
-#[derive(Copy, Clone, Debug)]
-pub enum SCTClockSource {
-    /// main clock
-    Main,
-
-    /// main PLL clock (`main_pll_clk`)
-    MainPLL,
-
-    /// `aux0_pll_clk`
-    AUX0PLL,
-
-    /// `48/60m_irc`
-    FFRO,
-
-    /// `aux1_pll_clk`
-    AUX1PLL,
-
-    /// `audio_pll_clk`
-    AudioPLL,
-
-    /// lowest power selection
-    None,
-}
 
 /// `SCTimer` based PWM Interface Constraints
 #[derive(Copy, Clone, Debug)]
@@ -135,13 +110,15 @@ impl Channel {
 
 // non-reexported (sealed) traits
 mod sealed {
-    use crate::clocks::SysconPeripheral;
+    use crate::clocks::{Sct0Config, SealedSysconPeripheral, SysconPeripheral};
     use crate::PeripheralType;
 
-    pub trait SCTimer: PeripheralType + SysconPeripheral + 'static + Send {
-        fn set_clock_source(clock: super::SCTClockSource);
-        fn get_clock_rate(clock: super::SCTClockSource) -> super::Hertz;
-        fn set_divisor(divisor: u8);
+    pub trait SCTimer
+    where
+        Self: PeripheralType + SysconPeripheral,
+        Self: 'static + Send,
+        Self: SealedSysconPeripheral<SysconPeriphConfig = Sct0Config>,
+     {
         fn configure(base_period: u32);
     }
 }
@@ -192,66 +169,6 @@ impl From<MicroSeconds> for Hertz {
 
 // only allow specified instances to SCTPwm construct
 impl sealed::SCTimer for crate::peripherals::SCT0 {
-    fn set_clock_source(clock: self::SCTClockSource) {
-        use SCTClockSource::{AudioPLL, Main, MainPLL, None, AUX0PLL, AUX1PLL, FFRO};
-
-        // SAFETY: safe so long as executed from single executor context or during initialization only
-        let clkctl0 = unsafe { pac::Clkctl0::steal() };
-
-        match clock {
-            Main => {
-                clkctl0.sctfclksel().write(|w| w.sel().main_clk());
-            }
-            MainPLL => {
-                clkctl0.sctfclksel().write(|w| w.sel().main_sys_pll_clk());
-            }
-            AUX0PLL => {
-                clkctl0.sctfclksel().write(|w| w.sel().syspll0_aux0_pll_clock());
-            }
-            FFRO => {
-                clkctl0.sctfclksel().write(|w| w.sel().ffro_clk());
-            }
-            AUX1PLL => {
-                clkctl0.sctfclksel().write(|w| w.sel().syspll0_aux1_pll_clock());
-            }
-            AudioPLL => {
-                clkctl0.sctfclksel().write(|w| w.sel().audio_pll_clk());
-            }
-            None => {
-                clkctl0.sctfclksel().write(|w| w.sel().none());
-            }
-        }
-
-        enable_and_reset::<SCT0>(&Sct0Config {});
-    }
-
-    fn get_clock_rate(clock: self::SCTClockSource) -> Hertz {
-        use SCTClockSource::{AudioPLL, Main, MainPLL, None, AUX0PLL, AUX1PLL, FFRO};
-
-        // TODO - fix these
-        match clock {
-            None => Hertz(0),
-            Main => Hertz(12_000_000), // TODO - integrate proper clock freq's when clocks.rs is ready
-            MainPLL => Hertz(64_000_000), // TODO - integrate proper clock freq's when clocks.rs is ready
-            AUX0PLL => Hertz(32_000),  // TODO - integrate proper clock freq's when clocks.rs is ready
-            AUX1PLL => Hertz(32_000),  // TODO - integrate proper clock freq's when clocks.rs is ready
-            FFRO => Hertz(48_000_000), // TODO - integrate proper clock freq's when clocks.rs is ready
-            AudioPLL => Hertz(32_000), // TODO - ""
-        }
-    }
-
-    /// configure SCT divisor
-    fn set_divisor(div: u8) {
-        // SAFETY: safe so long as executed from single executor context or during initialization only
-        let clkctl0 = unsafe { pac::Clkctl0::steal() };
-
-        clkctl0.sctfclkdiv().modify(|_, w| w.halt().set_bit().reset().set_bit());
-        clkctl0.sctfclkdiv().modify(|_, w|
-                // SAFETY: safe as long as the above is still true
-                unsafe { w.div().bits(div) });
-        clkctl0.sctfclkdiv().modify(|_, w| w.halt().clear_bit());
-    }
-
     fn configure(base_period: u32) {
         // SAFETY: safe so long as executed from single executor context or during initialization only
         let sct0 = unsafe { pac::Sct0::steal() };
@@ -307,16 +224,21 @@ impl sealed::SCTimer for crate::peripherals::SCT0 {
 pub struct SCTPwm<'d, T: sealed::SCTimer> {
     _p: Peri<'d, T>,
     period: MicroSeconds,
-    clock: SCTClockSource,
     count_max: u32,
+    clock_rate: Hertz,
 }
 
 impl<'d, T: sealed::SCTimer> SCTPwm<'d, T> {
     /// Take the `SCTimer` instance supplied and use it as a simple PWM driver. Function returns constructed Pwm instance.
     pub fn new(sct: Peri<'d, T>, period: MicroSeconds, clock: SCTClockSource) -> Self {
         // requested period must be possible with configured clock selection (within bounds of u8 divisor)!
-
-        let clock_rate = T::get_clock_rate(clock);
+        let config = Sct0Config {
+            source: clock,
+            // TODO: if further precision is needed for rates beyond u32::MAX clock_rate to pwm_Rate conversions,
+            // we can scale up to 256x to the factor term here.
+            div: 0,
+        };
+        let clock_rate = Hertz(enable_and_reset::<T>(&config).expect("todo"));
         let requested_pwm_rate: Hertz = period.into();
 
         // we cannot clock faster than the supplied clock rate
@@ -337,20 +259,13 @@ impl<'d, T: sealed::SCTimer> SCTPwm<'d, T> {
 
         // factor here is the amount of ticks in one period at clock_rate to achieve period and precision.
         // This sets the limit for what COUNTER can be
-
-        // now that the input configuration for rate has been validated, we can set the divisor accordingly
-        T::set_clock_source(clock);
-        //T::set_divisor((clock_rate.0 / requested_pwm_rate.0) as u8);
-        // TODO: if further precision is needed for rates beyond u32::MAX clock_rate to pwm_Rate conversions, we can scale up to 256x
-        // to the factor term here.
-        T::set_divisor(0);
         T::configure(factor);
 
         Self {
             _p: sct,
             period,
-            clock,
             count_max: factor,
+            clock_rate,
         }
     }
 }
@@ -358,14 +273,17 @@ impl<'d, T: sealed::SCTimer> SCTPwm<'d, T> {
 impl<T: sealed::SCTimer> Drop for SCTPwm<'_, T> {
     fn drop(&mut self) {
         // disable resources
-        T::set_clock_source(SCTClockSource::None);
+        enable_and_reset::<T>(&Sct0Config {
+            source: SCTClockSource::None,
+            div: 0,
+        });
+        disable::<T>();
     }
 }
 
 pub use embedded_hal_02::Pwm;
 
 use crate::clocks::enable_and_reset;
-use crate::peripherals::SCT0;
 
 impl<T: sealed::SCTimer> embedded_hal_02::Pwm for SCTPwm<'_, T> {
     type Channel = Channel;
@@ -570,7 +488,7 @@ impl<T: sealed::SCTimer> embedded_hal_02::Pwm for SCTPwm<'_, T> {
     where
         P: Into<Self::Time>,
     {
-        let clock_rate = T::get_clock_rate(self.clock);
+        let clock_rate = self.clock_rate;
         let requested_pwm_rate: Hertz = period.into().into();
 
         // period cannot be faster than supplied PWM clock source

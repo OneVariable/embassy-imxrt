@@ -331,6 +331,7 @@ impl _32kWakeClkSelect {
     }
 }
 
+#[derive(Debug)]
 pub enum ClockError {
     /// The requested configuration was impossible or conflicting
     BadConfiguration { reason: &'static str },
@@ -955,12 +956,18 @@ pub(crate) unsafe fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Re
     Ok(())
 }
 
+pub trait SPConfHelper {
+    /// This method is called AFTER `T::enable_perph_clock()`, and BEFORE
+    /// `T::reset_perph()`.
+    fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError>;
+}
+
 ///Trait to expose perph clocks
 // TODO: pub?
 pub trait SealedSysconPeripheral {
-    type SysconPeriphConfig;
+    type SysconPeriphConfig: SPConfHelper;
 
-    fn enable_perph_clock(cfg: &Self::SysconPeriphConfig);
+    fn enable_perph_clock();
     fn reset_perph();
     fn disable_perph_clock();
 }
@@ -974,20 +981,26 @@ pub trait SysconPeripheral: SealedSysconPeripheral + 'static {}
 /// # Safety
 ///
 /// Peripheral must not be in use.
-pub fn enable_and_reset<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) {
-    T::enable_perph_clock(cfg);
+pub fn enable_and_reset<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Result<u32, ClockError> {
+    T::enable_perph_clock();
+    let freq = critical_section::with(|cs| {
+        let clocks = CLOCKS.borrow_ref(cs);
+        let clocks = clocks.as_ref().ok_or(ClockError::prog_err("didn't call init"))?;
+        cfg.post_enable_config(clocks)
+    })?;
     T::reset_perph();
+    Ok(freq)
 }
 
-/// Enables peripheral `T`.
-pub fn enable<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) {
-    T::enable_perph_clock(cfg);
-}
+// /// Enables peripheral `T`.
+// pub fn enable<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Result<u32, ClockError> {
+//     T::enable_perph_clock(cfg)
+// }
 
-/// Reset peripheral `T`.
-pub fn reset<T: SysconPeripheral>() {
-    T::reset_perph();
-}
+// /// Reset peripheral `T`.
+// pub fn reset<T: SysconPeripheral>() {
+//     T::reset_perph();
+// }
 
 /// Disables peripheral `T`.
 ///
@@ -998,6 +1011,7 @@ pub fn disable<T: SysconPeripheral>() {
     T::disable_perph_clock();
 }
 
+// TODO: we should remove this, in favor of the config stuff?
 pub fn clock_freq<T: SysconPeripheral>() -> u32 {
     todo!()
 }
@@ -1006,50 +1020,150 @@ pub fn clock_freq<T: SysconPeripheral>() -> u32 {
 /// require some kind of "pre-flight check" to ensure upstream clocks are enabled and
 /// select/divs are made.
 mod sealed {
+    use super::SPConfHelper;
+
     pub struct UnimplementedConfig;
-    pub(super) fn unimpld_cfg(_cfg: &UnimplementedConfig) {
-        todo!()
+    impl SPConfHelper for UnimplementedConfig {
+        fn post_enable_config(&self, _clocks: &super::Clocks) -> Result<u32, super::ClockError> {
+            todo!()
+        }
     }
 }
 
 pub struct FlexcommConfig {}
-fn flexcomm_cfg(_cfg: &FlexcommConfig) {
-    todo!()
+impl SPConfHelper for FlexcommConfig {
+    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
+        todo!()
+    }
 }
 
 pub struct AdcConfig {}
-fn adc_cfg(_cfg: &AdcConfig) {
-    todo!()
+impl SPConfHelper for AdcConfig {
+    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
+        todo!()
+    }
 }
 
 pub struct FlexSpiConfig {}
-fn flexspi_cfg(_cfg: &FlexSpiConfig) {
-    todo!()
+impl SPConfHelper for FlexSpiConfig {
+    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
+        todo!()
+    }
 }
 
 pub struct CrcConfig {}
-fn crc_cfg(_cfg: &CrcConfig) {
-    todo!()
+impl SPConfHelper for CrcConfig {
+    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
+        todo!()
+    }
 }
 
-pub struct Sct0Config {}
-fn sct0_cfg(_cfg: &Sct0Config) {
-    todo!()
+/// clock source indicator for selecting while powering on the `SCTimer`
+#[derive(Copy, Clone, Debug)]
+pub enum SCTClockSource {
+    /// main clock
+    Main,
+
+    /// main PLL clock (`main_pll_clk`)
+    MainPLL,
+
+    /// `aux0_pll_clk`
+    AUX0PLL,
+
+    /// `48/60m_irc`
+    FFRO,
+
+    /// `aux1_pll_clk`
+    AUX1PLL,
+
+    /// `audio_pll_clk`
+    AudioPLL,
+
+    /// lowest power selection
+    None,
+}
+pub struct Sct0Config {
+    pub source: SCTClockSource,
+    pub div: u8,
+}
+impl SPConfHelper for Sct0Config {
+    fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
+        let clkctl0 = unsafe { pac::Clkctl0::steal() };
+        let mut freq = match self.source {
+            SCTClockSource::Main => {
+                // main_clk is ALWAYS enabled.
+                clkctl0.sctfclksel().write(|w| w.sel().main_clk());
+                clocks.main_clk
+            }
+            SCTClockSource::MainPLL => {
+                // main_pll_may not be enabled
+                let freq = clocks.main_pll_clk.ok_or(ClockError::bad_config("main_pll needed"))?;
+                clkctl0.sctfclksel().write(|w| w.sel().main_sys_pll_clk());
+                freq
+            }
+            SCTClockSource::AUX0PLL => {
+                // aux0_pll_clk may not be enabled
+                let freq = clocks.aux0_pll_clk.ok_or(ClockError::bad_config("aux0pll needed"))?;
+                clkctl0.sctfclksel().write(|w| w.sel().syspll0_aux0_pll_clock());
+                freq
+            }
+            SCTClockSource::FFRO => {
+                // FFRO/48_60mhz may not be enabled
+                let freq = clocks._48_60m_irc.ok_or(ClockError::bad_config("ffro needed"))?;
+                clkctl0.sctfclksel().write(|w| w.sel().ffro_clk());
+                freq
+            }
+            SCTClockSource::AUX1PLL => {
+                // aux1_pll_clk may not be enabled
+                let freq = clocks.aux1_pll_clk.ok_or(ClockError::bad_config("aux1pll needed"))?;
+                clkctl0.sctfclksel().write(|w| w.sel().syspll0_aux1_pll_clock());
+                freq
+            }
+            SCTClockSource::AudioPLL => {
+                // clkctl0.sctfclksel().write(|w| w.sel().audio_pll_clk());
+                return Err(ClockError::prog_err("audio pll not yet supported"));
+            }
+            SCTClockSource::None => {
+                clkctl0.sctfclksel().write(|w| w.sel().none());
+                0
+            }
+        };
+
+        if !matches!(self.source, SCTClockSource::None) {
+            clkctl0.sctfclkdiv().modify(|_, w| w.halt().set_bit().reset().set_bit());
+            // SAFETY: safe as long as the above is still true
+            clkctl0.sctfclkdiv().modify(|_, w| unsafe { w.div().bits(self.div) });
+            clkctl0.sctfclkdiv().modify(|_, w| w.halt().clear_bit());
+            while clkctl0.sctfclkdiv().read().reqflag().bit_is_set() {}
+
+            freq /= 1u32 + self.div as u32;
+        }
+
+        Ok(freq)
+    }
 }
 
 pub struct WdtConfig {}
-fn wdt_cfg(_cfg: &WdtConfig) {
-    todo!()
+impl SPConfHelper for WdtConfig {
+    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
+        todo!()
+    }
 }
 
 pub struct CtimerConfig {}
-fn ctimer_cfg(_cfg: &CtimerConfig) {
-    todo!()
+impl SPConfHelper for CtimerConfig {
+    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
+        todo!()
+    }
 }
 
 /// Used when a clock has no upstream clocks that need to be configured or verified.
 pub struct NoConfig;
-fn no_cfg(_cfg: &NoConfig) {}
+impl SPConfHelper for NoConfig {
+    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
+        todo!()
+    }
+}
 
 macro_rules! impl_perph_clk {
     (
@@ -1065,11 +1179,9 @@ macro_rules! impl_perph_clk {
         impl SealedSysconPeripheral for crate::peripherals::$peripheral {
             type SysconPeriphConfig = $cfgty;
 
-            fn enable_perph_clock(_cfg: &Self::SysconPeriphConfig) {
+            fn enable_perph_clock() {
                 // SAFETY: unsafe needed to take pointers to Rstctl1 and Clkctl1
                 let cc1 = unsafe { pac::$clkctl::steal() };
-
-                $cfgfn(_cfg);
 
                 paste! {
                     // SAFETY: unsafe due to the use of bits()
@@ -1102,7 +1214,7 @@ macro_rules! impl_perph_clk {
     };
 }
 
-use sealed::{unimpld_cfg, UnimplementedConfig};
+use sealed::UnimplementedConfig;
 
 // These should enabled once the relevant peripherals are implemented.
 // impl_perph_clk!(GPIOINTCTL, Clkctl1, pscctl2, Rstctl1, prstctl2, 30, UnimplementedConfig, unimpld_cfg);
