@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use embassy_hal_internal::{Peri, PeripheralType};
 
-use crate::clocks::{enable_and_reset, SysconPeripheral, WdtConfig};
+use crate::clocks::{enable_and_reset, SysconPeripheral, WdtClkSel, WdtConfig, WdtInstance};
 use crate::peripherals::{WDT0, WDT1};
 
 /// Windowed watchdog timer (WWDT) driver.
@@ -43,17 +43,15 @@ impl SealedInstance for crate::peripherals::WDT0 {
     }
 
     fn init() {
-        init_lposc();
-
-        // REVISIT: Can we do this generically?
-        let clkctl0 = unsafe { &*crate::pac::Clkctl0::ptr() };
-        clkctl0.wdt0fclksel().modify(|_, w| w.sel().lposc());
+        enable_and_reset::<WDT0>(&WdtConfig {
+            source: WdtClkSel::LpOsc1m,
+            instance: WdtInstance::Wwdt0,
+        })
+        .expect("lposc should be active");
 
         // Allow WDT0 interrupts to wake device from deep-sleep mode
         let sysctl0 = unsafe { &*crate::pac::Sysctl0::ptr() };
         sysctl0.starten0_set().write(|w| w.wdt0().set_bit());
-
-        enable_and_reset::<WDT0>(&WdtConfig {});
     }
 }
 impl Instance for crate::peripherals::WDT0 {}
@@ -67,13 +65,11 @@ impl SealedInstance for crate::peripherals::WDT1 {
     }
 
     fn init() {
-        init_lposc();
-
-        // Enable WWDT1 clock and set LPOSC as clock source
-        let clkctl1 = unsafe { &*crate::pac::Clkctl1::ptr() };
-        clkctl1.wdt1fclksel().modify(|_, w| w.sel().lposc());
-
-        enable_and_reset::<WDT1>(&WdtConfig {});
+        enable_and_reset::<WDT1>(&WdtConfig {
+            source: WdtClkSel::LpOsc1m,
+            instance: WdtInstance::Wwdt1,
+        })
+        .expect("lposc should be active");
     }
 }
 impl Instance for crate::peripherals::WDT1 {}

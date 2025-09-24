@@ -1143,10 +1143,46 @@ impl SPConfHelper for Sct0Config {
     }
 }
 
-pub struct WdtConfig {}
+pub enum WdtClkSel {
+    LpOsc1m,
+    None,
+}
+pub enum WdtInstance {
+    Wwdt0,
+    Wwdt1,
+}
+pub struct WdtConfig {
+    pub source: WdtClkSel,
+    pub instance: WdtInstance,
+}
 impl SPConfHelper for WdtConfig {
-    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
-        todo!()
+    fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
+        let freq = match self.source {
+            WdtClkSel::LpOsc1m => {
+                if !clocks._1m_lposc.enabled {
+                    return Err(ClockError::bad_config("wdt needs 1m_lposc"));
+                }
+                clocks._1m_lposc.frequency()
+            }
+            WdtClkSel::None => 0,
+        };
+        match self.instance {
+            WdtInstance::Wwdt0 => {
+                let clkctl0 = unsafe { pac::Clkctl0::steal() };
+                clkctl0.wdt0fclksel().modify(|_r, w| match self.source {
+                    WdtClkSel::LpOsc1m => w.sel().lposc(),
+                    WdtClkSel::None => w.sel().none(),
+                });
+            }
+            WdtInstance::Wwdt1 => {
+                let clkctl1 = unsafe { pac::Clkctl1::steal() };
+                clkctl1.wdt1fclksel().modify(|_r, w| match self.source {
+                    WdtClkSel::LpOsc1m => w.sel().lposc(),
+                    WdtClkSel::None => w.sel().none(),
+                });
+            }
+        }
+        Ok(freq)
     }
 }
 
