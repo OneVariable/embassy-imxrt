@@ -7,7 +7,9 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
 
-use crate::clocks::{clock_freq, enable_and_reset, NoConfig, SysconPeripheral, CtimerConfig};
+use crate::clocks::{
+    clock_freq, enable_and_reset, CTimerInstance, CTimerSel, ClockError, CtimerConfig, NoConfig, SysconPeripheral,
+};
 use crate::iopctl::{DriveMode, DriveStrength, Inverter, IopctlPin as Pin, Pull, SlewRate};
 use crate::pac::Clkctl1;
 use crate::pwm::{CentiPercent, Hertz, MicroSeconds};
@@ -1061,30 +1063,34 @@ impl<'p> CTimerPwmPeriodChannel<'p> {
 }
 
 /// Initializes the timer modules and returns a `CTimerManager` in the initialized state.
+fn enable_all() -> core::result::Result<(), ClockError> {
+    enable_and_reset::<peripherals::CTIMER0_COUNT_CHANNEL0>(&CtimerConfig {
+        source: CTimerSel::SfroClk,
+        instance: CTimerInstance::CTimer0,
+    })?;
+    enable_and_reset::<peripherals::CTIMER1_COUNT_CHANNEL0>(&CtimerConfig {
+        source: CTimerSel::SfroClk,
+        instance: CTimerInstance::CTimer1,
+    })?;
+    enable_and_reset::<peripherals::CTIMER2_COUNT_CHANNEL0>(&CtimerConfig {
+        source: CTimerSel::SfroClk,
+        instance: CTimerInstance::CTimer2,
+    })?;
+    enable_and_reset::<peripherals::CTIMER3_COUNT_CHANNEL0>(&CtimerConfig {
+        source: CTimerSel::SfroClk,
+        instance: CTimerInstance::CTimer3,
+    })?;
+    enable_and_reset::<peripherals::CTIMER4_COUNT_CHANNEL0>(&CtimerConfig {
+        source: CTimerSel::SfroClk,
+        instance: CTimerInstance::CTimer4,
+    })?;
+    enable_and_reset::<peripherals::PIMCTL>(&NoConfig)?;
+    Ok(())
+}
+
 pub fn init() {
-    // SAFETY: This has no safety impact as we are getting a singleton register instance here and its dropped it the end of the function
-    let reg = unsafe { Clkctl1::steal() };
 
-    // Initialization steps from NXP TRM
-    //
-    // • Enable the clock to the CTIMER in the CLKCTL1_PSCCTL2 register
-    //          This enables the register interface and the peripheral function clock.
-    // • Clear the CTIMER peripheral reset in the RSTCTL1_PRSTCTL2 register
-    // (Section 4.5.4.4) by writing to the RSTCTL1_PRSTCTL2_CLR register (Section 4.5.4.10).
-    enable_and_reset::<peripherals::CTIMER0_COUNT_CHANNEL0>(&CtimerConfig {});
-    enable_and_reset::<peripherals::CTIMER1_COUNT_CHANNEL0>(&CtimerConfig {});
-    enable_and_reset::<peripherals::CTIMER2_COUNT_CHANNEL0>(&CtimerConfig {});
-    enable_and_reset::<peripherals::CTIMER3_COUNT_CHANNEL0>(&CtimerConfig {});
-    enable_and_reset::<peripherals::CTIMER4_COUNT_CHANNEL0>(&CtimerConfig {});
-    enable_and_reset::<peripherals::PIMCTL>(&NoConfig);
-
-    // • Select a clock source for the CTIMER using the appropriate CT32BIT0FCLKSEL
-    // register (see Section 4.5.2.55 through Section 4.5.2.59).
-    reg.ct32bitfclksel(0).write(|w| w.sel().sfro_clk());
-    reg.ct32bitfclksel(1).write(|w| w.sel().sfro_clk());
-    reg.ct32bitfclksel(2).write(|w| w.sel().sfro_clk());
-    reg.ct32bitfclksel(3).write(|w| w.sel().sfro_clk());
-    reg.ct32bitfclksel(4).write(|w| w.sel().sfro_clk());
+    enable_all().expect("Initializing timers should not fail");
 }
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for CtimerInterruptHandler<T> {
