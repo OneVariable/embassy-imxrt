@@ -74,7 +74,9 @@ impl<'d> Crc<'d> {
     /// Instantiates new CRC peripheral and initializes to default values.
     pub fn new<T: Instance + SealedSysconPeripheral<SysconPeriphConfig = NoConfig>>(_peripheral: Peri<'d, T>, config: Config) -> Self {
         // enable CRC clock
-        enable_and_reset::<T>(&NoConfig);
+        //
+        // "NoConfig" peripherals can't fail, we can ignore the result.
+        _ = enable_and_reset::<T>(&NoConfig);
 
         let mut instance = Self {
             info: T::info(),

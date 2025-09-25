@@ -273,7 +273,7 @@ impl<'d, T: sealed::SCTimer> SCTPwm<'d, T> {
 impl<T: sealed::SCTimer> Drop for SCTPwm<'_, T> {
     fn drop(&mut self) {
         // disable resources
-        enable_and_reset::<T>(&Sct0Config {
+        _ = enable_and_reset::<T>(&Sct0Config {
             source: SCTClockSource::None,
             div: 0,
         });

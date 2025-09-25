@@ -101,7 +101,6 @@ struct Info {
 
 impl<const N: usize> Adc<'_, N> {
     fn init() {
-
         // TODO: "Call the POWER_SetAnalogBuffer API (see Section 6.4.8)
         // to enable the analog buffer used by the ADC and the comparator."
 
@@ -110,7 +109,8 @@ impl<const N: usize> Adc<'_, N> {
             sel0: AdcSel0::Lposc,
             sel1: AdcSel1::Adc0fclksel0MuxOut,
             div: 0,
-        }).expect("Adc setup shouldn't fail");
+        })
+        .expect("Adc setup shouldn't fail");
         let sysctl0 = unsafe { crate::pac::Sysctl0::steal() };
 
         // Power up ADC block

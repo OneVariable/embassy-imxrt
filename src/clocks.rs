@@ -4,8 +4,12 @@ use critical_section::Mutex;
 pub use pac::clkctl0::adc0fclksel0::Sel as AdcSel0;
 pub use pac::clkctl0::adc0fclksel1::Sel as AdcSel1;
 pub use pac::clkctl1::ct32bitfclksel::Sel as CTimerSel;
+pub use pac::clkctl1::fc14fclksel::Sel as Flexcomm14FclkSel;
+pub use pac::clkctl1::fc15fclksel::Sel as Flexcomm15FclkSel;
 pub use pac::clkctl1::flexcomm::fcfclksel::Sel as FlexcommFclkSel;
 pub use pac::clkctl1::flexcomm::frgclksel::Sel as FlexcommFrgSel;
+pub use pac::clkctl1::frg14clksel::Sel as Flexcomm14FrgSel;
+pub use pac::clkctl1::frg15clksel::Sel as Flexcomm15FrgSel;
 use paste::paste;
 
 use crate::iopctl::IopctlPin;
@@ -14,8 +18,6 @@ use crate::peripherals::{PIO0_25, PIO2_15, PIO2_30};
 
 /// Max cpu freq is 300mhz, so that's 300 clock ticks per micro second
 const WORST_CASE_TICKS_PER_US: u32 = 300;
-const FLEXCOMM_INSTANCES: usize = 8;
-
 static CLOCKS: Mutex<RefCell<Option<Clocks>>> = Mutex::new(RefCell::new(None));
 
 #[derive(Debug, Clone, Default)]
@@ -55,21 +57,32 @@ pub struct Clocks {
     /// and Systick clock source
     pub main_clk: u32,
     /// The output of the CPU Clock Divider, sourced from `main_clk`
+    /// Also "hclk"
     pub sys_cpu_ahb_clk: Option<u32>,
     /// The output of FRGPLLCLKDIV, fed by main_pll_clk
     pub frg_pll_clk: Option<u32>,
     //
     // --- These clocks have not been configured yet ---
+    // // We probably SHOULD (allow for) configuration of these clocks:
     //
     // pub dsp_main_clk: Option<u32>,
     // pub audio_pll_clk: Option<u32>,
+    // /// The MCLK input function, when it is connected to a pin by selecting it in the IOCON block. May
+    // /// be used as the function clock of any Flexcomm Interface, and/or to clock the DMIC peripheral.
+    // pub mclk_in: Option<u32>,
+    // /// This is the 1mlposc /32 (which is actually 31250Hz?), which can
+    // /// be used for the _32k_wake_clk
+    // pub lp_32k: StaticClock<32_768>,
+    //
+    // // These are more peripheral clocks
+    //
+    // // Clock after flexcomm-specific fractional rate generator, not handled by
+    // // init, instead handled by periph drivers
     // pub frg_clk_n: [Option<u32>; FLEXCOMM_INSTANCES],
     // pub frg_clk_14: Option<u32>,
     // pub frg_clk_15: Option<u32>,
-    // pub frg_pll: Option<u32>,
-    // pub hclk: Option<u32>,
-    // pub lp_32k: StaticClock<32_768>,
-    // pub mclk_in: Option<u32>,
+    //
+    // /// Clock for the OS Event Timer peripheral.
     // pub ostimer_clk: Option<u32>,
 }
 
@@ -104,6 +117,11 @@ impl Clocks {
     fn ensure_frg_pll(&self) -> Result<u32, ClockError> {
         self.frg_pll_clk
             .ok_or_else(|| ClockError::bad_config("frg pll needed but not enabled"))
+    }
+
+    fn ensure_xtal_in(&self) -> Result<u32, ClockError> {
+        self.clk_in
+            .ok_or_else(|| ClockError::bad_config("xtal_in needed but not enabled"))
     }
 }
 
@@ -638,6 +656,21 @@ impl ClockOperator<'_> {
     }
 
     /// Section 4.2.2: "Configure the main clock and system clock" (part 1)
+    ///
+    /// ```text
+    ///                      ┌────┐
+    ///  48/60m_irc_div2 ───▶│00  │
+    ///           clk_in ───▶│01  │                      ┌────┐
+    ///         1m_lposc ───▶│10  │─────────────────────▶│00  │
+    ///       48/60m_irc ───▶│11  │         16m_irc ┌───▶│01  │
+    ///                      └────┘    ─────────────┘┌──▶│10  │─────▶ main_clk
+    ///                         ▲      main_pll_clk  │┌─▶│11  │
+    ///                         │      ──────────────┘│  └────┘
+    ///           Main clock select A       32k_clk   │     ▲
+    ///            MAINCLKSELA[1:0]    ───────────────┘     │
+    ///                                       Main clock select B
+    ///                                        MAINCLKSELB[1:0]
+    /// ```
     fn setup_main_clock(&mut self) -> Result<(), ClockError> {
         self.clocks.main_clk = match self.config.main_clock_select {
             MainClockSelect::_48_60MIrcDiv4 => self.ensure_48_60mhz_irc_active()? / 4,
@@ -684,7 +717,7 @@ impl ClockOperator<'_> {
     ///             │      PFC0DIV
     ///             │  ┌─────────────┐
     ///             │  │Systick Clock│                ┌─────┐
-    ///             ├─▶│Divider      │───────────────▶│000  │
+    ///             └─▶│Divider      │───────────────▶│000  │
     ///                └─────────────┘   1m_lposc┌───▶│001  │  to Systick
     ///                       ▲          ────────┘┌──▶│010  │─────────────▶
     ///                       │           32k_clk │┌─▶│011  │function clock
@@ -719,6 +752,15 @@ impl ClockOperator<'_> {
         Ok(())
     }
 
+    /// ```text
+    ///                 ┌─────────────┐
+    ///                 │Main PLL     │  main_pll_clk
+    /// main_pll ──────▶│Clock Divider│ ────────────▶
+    ///  (pfd0)         └─────────────┘
+    ///                        ▲
+    ///                        │
+    ///                  MAINPLLCLKDIV
+    /// ```
     fn setup_pll_pfd0(&mut self, main_pll: &MainPll, pll_output_freq: u32) -> Result<(), ClockError> {
         let Some(div) = main_pll.pfd0_div else {
             self.disable_pll_pfd0();
@@ -760,6 +802,15 @@ impl ClockOperator<'_> {
         Ok(())
     }
 
+    /// ```text
+    ///                 ┌─────────────┐
+    ///                 │DSP PLL      │   dsp_pll_clk
+    /// main_pll ──────▶│Clock Divider│ ────────────▶
+    ///  (pfd1)         └─────────────┘
+    ///                        ▲
+    ///                        │
+    ///                  DSPPLLCLKDIV
+    /// ```
     fn setup_pll_pfd1(&mut self, main_pll: &MainPll, pll_output_freq: u32) -> Result<(), ClockError> {
         let Some(div) = main_pll.pfd1_div else {
             self.disable_pll_pfd1();
@@ -801,6 +852,15 @@ impl ClockOperator<'_> {
         Ok(())
     }
 
+    /// ```text
+    ///                 ┌─────────────┐
+    ///                 │AUX0 PLL     │  aux0_pll_clk
+    /// main_pll ──────▶│Clock Divider│ ────────────▶
+    ///  (pfd2)         └─────────────┘
+    ///                        ▲
+    ///                        │
+    ///                  AUX0PLLCLKDIV
+    /// ```
     fn setup_pll_pfd2(&mut self, main_pll: &MainPll, pll_output_freq: u32) -> Result<(), ClockError> {
         let Some(div) = main_pll.pfd2_div else {
             self.disable_pll_pfd2();
@@ -841,6 +901,15 @@ impl ClockOperator<'_> {
         Ok(())
     }
 
+    /// ```text
+    ///                 ┌─────────────┐
+    ///                 │AUX1 PLL     │  aux1_pll_clk
+    /// main_pll ──────▶│Clock Divider│ ────────────▶
+    ///  (pfd3)         └─────────────┘
+    ///                        ▲
+    ///                        │
+    ///                  AUX1PLLCLKDIV
+    /// ```
     fn setup_pll_pfd3(&mut self, main_pll: &MainPll, pll_output_freq: u32) -> Result<(), ClockError> {
         let Some(div) = main_pll.pfd3_div else {
             self.disable_pll_pfd3();
@@ -916,6 +985,15 @@ impl ClockOperator<'_> {
         }
     }
 
+    /// ```text
+    ///               ┌────────────────┐
+    /// main_pll_clk  │PLL to Flexcomm │ frg_pll
+    /// ─────────────▶│FRG Divider     │────────▶
+    ///               └────────────────┘
+    ///                        ▲
+    ///                        │
+    ///                  FRGPLLCLKDIV
+    /// ```
     fn setup_frg_pll_div(&mut self) -> Result<(), ClockError> {
         let Some(div) = self.config.frg_clk_pll_div else {
             return Ok(());
@@ -1122,39 +1200,31 @@ impl SPConfHelper for FlexcommConfig {
                 fcomm.frgclksel().modify(|_r, w| w.sel().variant(self.frg_clk_sel));
 
                 // Flexcomm Interface function clock = (clock selected via FRGCLKSEL) / (1 + MULT / DIV)
-                // Since we fix div to 0xFF (256), this then becomes:
-                //
-                //       CLK
-                // ----------------
-                // (1 + (MULT/DIV))
-                //
-                //       CLK
-                // ----------------
-                // ((256 / 256) + (MULT/256))
-                //
-                //       CLK
-                // ----------------
-                // (256 + MULT) / 256
-                //
-                //    256 * CLK
-                // ----------------
-                //   (256 + MULT)
-                //
-                // FOUT = (CLK * 256) / (256 + MULT)
                 fcomm.frgctl().modify(|_r, w| unsafe {
                     w.mult().bits(self.mult);
                     w.div().bits(0xFF);
                     w
                 });
 
-                // There's probably a smarter way to do this, honestly maybe just
-                // floats? we have a hardware floating point.
+                // Since we fix div to 0xFF (256), this then becomes:
+                //
+                //              CLK                 CLK
+                // FOUT = ---------------- => --------------------------
+                //        (1 + (MULT/DIV))    ((256 / 256) + (MULT/256))
+                //
+                //              CLK                256 * CLK
+                // FOUT = ------------------ => ---------------
+                //        (256 + MULT) / 256      (256 + MULT)
+                //
+                // FOUT = (CLK * 256) / (256 + MULT)
+                //
+                // There's probably a smarter way to do this (w/o u64 math),
+                // honestly maybe just floats? we have a hardware floating point.
                 let freq = freq as u64;
                 let freq = freq * 256u64;
                 let fdiv = self.mult as u64 + 256u64;
                 let freq = freq / fdiv;
-                let freq = freq as u32;
-                freq
+                freq as u32
             }
             FlexcommFclkSel::SfroClk => clocks.ensure_16m_sfro()?,
             FlexcommFclkSel::FfroClk => clocks.ensure_48_60_ffro()?,
@@ -1166,26 +1236,159 @@ impl SPConfHelper for FlexcommConfig {
         Ok(freq)
     }
 }
+
 pub struct FlexcommConfig14 {
-    // frg_clk_sel: FlexcommFrgSel,
-    // fc_clk_sel: FlexcommFclkSel,
-    // instance: FlexcommInstance,
-    // mult: u8,
+    pub frg_clk_sel: Flexcomm14FrgSel,
+    pub fc_clk_sel: Flexcomm14FclkSel,
+    pub mult: u8,
 }
 impl SPConfHelper for FlexcommConfig14 {
-    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
-        todo!()
+    /// ```rust
+    ///                                          16m_clk_irc ┌─────┐
+    ///                                           ──────────▶│000  │
+    ///                                           48/60m_irc │     │
+    ///                                           ──────────▶│001  │
+    ///   main_clk ┌─────┐                     audio_pll_clk │     │
+    /// ──────────▶│000  │                        ──────────▶│010  │ function clock
+    ///    frg_pll │     │                           mclk_in │     │────────────────▶
+    /// ──────────▶│001  │     ┌───────────────┐  ──────────▶│011  │    of HS SPI
+    ///    16m_irc │     │     │Fractional Rate│   frg_clk14 │     │
+    /// ──────────▶│010  │────▶│Divider (FRG)  │────────────▶│100  │
+    /// 48/60m_irc │     │     └───────────────┘       "none"│     │
+    /// ──────────▶│011  │             ▲          ──────────▶│111  │
+    ///     "none" │     │             │                     └─────┘
+    /// ──────────▶│111  │       FRG14CTL[15:0]                 ▲
+    ///            └─────┘                                      │
+    ///               ▲                               HS SPI clock select
+    ///               │                                 FC14FCLKSEL[2:0]
+    ///    HS SPI FRG clock select
+    ///       FRG14CLKSEL[2:0]
+    /// ```
+    fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
+        let clkctl1 = unsafe { pac::Clkctl1::steal() };
+        let freq = match self.fc_clk_sel {
+            Flexcomm14FclkSel::FcnFrgClk => {
+                let freq = match self.frg_clk_sel {
+                    Flexcomm14FrgSel::MainClk => clocks.main_clk,
+                    Flexcomm14FrgSel::FrgPllClk => clocks.ensure_frg_pll()?,
+                    Flexcomm14FrgSel::SfroClk => clocks.ensure_16m_sfro()?,
+                    Flexcomm14FrgSel::FfroClk => clocks.ensure_48_60_ffro()?,
+                    Flexcomm14FrgSel::None => 0,
+                };
+                clkctl1.frg14clksel().modify(|_r, w| w.sel().variant(self.frg_clk_sel));
+
+                // Flexcomm Interface function clock = (clock selected via FRGCLKSEL) / (1 + MULT / DIV)
+                clkctl1.frg14ctl().modify(|_r, w| unsafe {
+                    w.mult().bits(self.mult);
+                    w.div().bits(0xFF);
+                    w
+                });
+
+                // Since we fix div to 0xFF (256), this then becomes:
+                //
+                //              CLK                 CLK
+                // FOUT = ---------------- => --------------------------
+                //        (1 + (MULT/DIV))    ((256 / 256) + (MULT/256))
+                //
+                //              CLK                256 * CLK
+                // FOUT = ------------------ => ---------------
+                //        (256 + MULT) / 256      (256 + MULT)
+                //
+                // FOUT = (CLK * 256) / (256 + MULT)
+                //
+                // There's probably a smarter way to do this (w/o u64 math),
+                // honestly maybe just floats? we have a hardware floating point.
+                let freq = freq as u64;
+                let freq = freq * 256u64;
+                let fdiv = self.mult as u64 + 256u64;
+                let freq = freq / fdiv;
+                freq as u32
+            }
+            Flexcomm14FclkSel::SfroClk => clocks.ensure_16m_sfro()?,
+            Flexcomm14FclkSel::FfroClk => clocks.ensure_48_60_ffro()?,
+            Flexcomm14FclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
+            Flexcomm14FclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
+            Flexcomm14FclkSel::None => 0,
+        };
+        clkctl1.fc14fclksel().modify(|_r, w| w.sel().variant(self.fc_clk_sel));
+        Ok(freq)
     }
 }
 pub struct FlexcommConfig15 {
-    // frg_clk_sel: FlexcommFrgSel,
-    // fc_clk_sel: FlexcommFclkSel,
-    // instance: FlexcommInstance,
-    // mult: u8,
+    pub frg_clk_sel: Flexcomm15FrgSel,
+    pub fc_clk_sel: Flexcomm15FclkSel,
+    pub mult: u8,
 }
 impl SPConfHelper for FlexcommConfig15 {
-    fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
-        todo!()
+    /// ```text
+    ///                                          16m_clk_irc ┌─────┐
+    ///                                           ──────────▶│000  │
+    ///                                           48/60m_irc │     │
+    ///                                           ──────────▶│001  │
+    ///   main_clk ┌─────┐                     audio_pll_clk │     │
+    /// ──────────▶│000  │                        ──────────▶│010  │ function clock
+    ///    frg_pll │     │                           mclk_in │     │────────────────▶
+    /// ──────────▶│001  │     ┌───────────────┐  ──────────▶│011  │   of PMIC I2C
+    ///    16m_irc │     │     │Fractional Rate│   frg_clk14 │     │
+    /// ──────────▶│010  │────▶│Divider (FRG)  │────────────▶│100  │
+    /// 48/60m_irc │     │     └───────────────┘       "none"│     │
+    /// ──────────▶│011  │             ▲          ──────────▶│111  │
+    ///     "none" │     │             │                     └─────┘
+    /// ──────────▶│111  │       FRG15CTL[15:0]                 ▲
+    ///            └─────┘                                      │
+    ///               ▲                              PMIC I2C clock select
+    ///               │                                 FC15FCLKSEL[2:0]
+    ///   PMIC I2C FRG clock select
+    ///       FRG15CLKSEL[2:0]
+    /// ```
+    fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
+        let clkctl1 = unsafe { pac::Clkctl1::steal() };
+        let freq = match self.fc_clk_sel {
+            Flexcomm15FclkSel::FcnFrgClk => {
+                let freq = match self.frg_clk_sel {
+                    Flexcomm15FrgSel::MainClk => clocks.main_clk,
+                    Flexcomm15FrgSel::FrgPllClk => clocks.ensure_frg_pll()?,
+                    Flexcomm15FrgSel::SfroClk => clocks.ensure_16m_sfro()?,
+                    Flexcomm15FrgSel::FfroClk => clocks.ensure_48_60_ffro()?,
+                    Flexcomm15FrgSel::None => 0,
+                };
+                clkctl1.frg15clksel().modify(|_r, w| w.sel().variant(self.frg_clk_sel));
+
+                // Flexcomm Interface function clock = (clock selected via FRGCLKSEL) / (1 + MULT / DIV)
+                clkctl1.frg15ctl().modify(|_r, w| unsafe {
+                    w.mult().bits(self.mult);
+                    w.div().bits(0xFF);
+                    w
+                });
+
+                // Since we fix div to 0xFF (256), this then becomes:
+                //
+                //              CLK                 CLK
+                // FOUT = ---------------- => --------------------------
+                //        (1 + (MULT/DIV))    ((256 / 256) + (MULT/256))
+                //
+                //              CLK                256 * CLK
+                // FOUT = ------------------ => ---------------
+                //        (256 + MULT) / 256      (256 + MULT)
+                //
+                // FOUT = (CLK * 256) / (256 + MULT)
+                //
+                // There's probably a smarter way to do this (w/o u64 math),
+                // honestly maybe just floats? we have a hardware floating point.
+                let freq = freq as u64;
+                let freq = freq * 256u64;
+                let fdiv = self.mult as u64 + 256u64;
+                let freq = freq / fdiv;
+                freq as u32
+            }
+            Flexcomm15FclkSel::SfroClk => clocks.ensure_16m_sfro()?,
+            Flexcomm15FclkSel::FfroClk => clocks.ensure_48_60_ffro()?,
+            Flexcomm15FclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
+            Flexcomm15FclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
+            Flexcomm15FclkSel::None => 0,
+        };
+        clkctl1.fc15fclksel().modify(|_r, w| w.sel().variant(self.fc_clk_sel));
+        Ok(freq)
     }
 }
 
@@ -1216,7 +1419,7 @@ impl SPConfHelper for AdcConfig {
             AdcSel1::Adc0fclksel0MuxOut => {
                 let freq = match self.sel0 {
                     AdcSel0::SfroClk => clocks.ensure_16m_sfro()?,
-                    AdcSel0::XtalinClk => todo!(),
+                    AdcSel0::XtalinClk => clocks.ensure_xtal_in()?,
                     AdcSel0::Lposc => clocks.ensure_1m_lposc()?,
                     AdcSel0::FfroClk => clocks.ensure_48_60_ffro()?,
                     AdcSel0::None => 0,
@@ -1278,6 +1481,27 @@ pub struct Sct0Config {
     pub div: u8,
 }
 impl SPConfHelper for Sct0Config {
+    /// ```text
+    ///     main clk ┌─────┐
+    /// ────────────▶│000  │
+    /// main_pll_clk │     │
+    /// ────────────▶│001  │
+    /// aux0_pll_clk │     │
+    /// ────────────▶│010  │        ┌─────────────┐
+    ///   48/60m_irc │     │        │SCTimer/PWM  │ to SCTimer/PWM
+    /// ────────────▶│011  │───────▶│Clock Divider│───────────────▶
+    /// aux1_pll_clk │     │        └─────────────┘  input clock 7
+    /// ────────────▶│100  │               ▲
+    ///audio_pll_clk │     │               │
+    /// ────────────▶│101  │           SCTFCLKDIV
+    ///       "none" │     │
+    /// ────────────▶│111  │
+    ///              └─────┘
+    ///                 ▲
+    ///                 │
+    ///     SCTimer/PWM clock select
+    ///         SCTFCLKSEL[2:0]
+    /// ```
     fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
         let clkctl0 = unsafe { pac::Clkctl0::steal() };
         let mut freq = match self.source {
@@ -1347,6 +1571,17 @@ pub struct WdtConfig {
     pub instance: WdtInstance,
 }
 impl SPConfHelper for WdtConfig {
+    /// ```text
+    ///   1m_lposc ┌─────┐
+    /// ──────────▶│000  │ to WDTn
+    ///     "none" │     │────────▶
+    /// ──────────▶│111  │   fclk
+    ///            └─────┘
+    ///               ▲
+    ///               │
+    ///       WDTn Clock Select
+    ///       WDTnFCLKSEL[2:0]
+    /// ```
     fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
         let freq = match self.source {
             WdtClkSel::LpOsc1m => clocks.ensure_1m_lposc()?,
@@ -1386,6 +1621,25 @@ pub struct CtimerConfig {
     pub instance: CTimerInstance,
 }
 impl SPConfHelper for CtimerConfig {
+    /// ```text
+    ///     main clk ┌─────┐
+    /// ────────────▶│000  │
+    ///      16m_irc │     │
+    /// ────────────▶│001  │
+    ///   48/60m_irc │     │ function clock of
+    /// ────────────▶│010  │     CTIMER n
+    ///audio_pll_clk │     │──────────────────▶
+    /// ────────────▶│011  │ CTIMERs 0 thru 4
+    ///      mclk_in │     │
+    /// ────────────▶│100  │
+    ///       "none" │     │
+    /// ────────────▶│111  │
+    ///              └─────┘
+    ///                 ▲
+    ///                 │
+    ///       TIMER n clock select
+    ///       CT32BITnFCLKSEL[2:0]
+    /// ```
     fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
         let clkctl1 = unsafe { pac::Clkctl1::steal() };
         let freq = match self.source {
@@ -1408,7 +1662,11 @@ impl SPConfHelper for CtimerConfig {
 pub struct NoConfig;
 impl SPConfHelper for NoConfig {
     fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
-        todo!()
+        // TODO: do we want this to be an Option, or an associated type?
+        // For "NoConfig" items, we generally don't track/encode their
+        // upstream source, it is often AHB/APB clocks, but I'm not sure
+        // if this is ALWAYS true.
+        Ok(0)
     }
 }
 
@@ -1610,38 +1868,6 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, WdtConfig);
 //
 // -----
 //
-// (first half partially used above)
-//
-//                                                               ┌─────────┐
-//                                                               │CPU Clock│  to CPU, AHB, APB, etc.
-//                                                          ┌───▶│Divider  │──────────────────────────────────────▶
-//                                                          │    └─────────┘           hclk
-//                     ┌────┐                               │         ▲
-// 48/60m_irc_div2 ───▶│00  │                               │         │
-//          clk_in ───▶│01  │                      ┌────┐   │  SYSCPUAHBCLKDIV
-//        1m_lposc ───▶│10  │─────────────────────▶│00  │   │  ┌─────────────┐
-//      48/60m_irc ───▶│11  │         16m_irc ┌───▶│01  │   │  │ARM Trace    │ to ARM Trace function clock
-//                     └────┘    ─────────────┘┌──▶│10  │───┼─▶│Clock Divider│────────────────────────────────────▶
-//                        ▲      main_pll_clk  │┌─▶│11  │   │  └─────────────┘
-//                        │      ──────────────┘│  └────┘   │         ▲
-//          Main clock select A       32k_clk   │     ▲     │         │
-//           MAINCLKSELA[1:0]    ───────────────┘     │     │      PFC0DIV
-//                                      Main clock select B │  ┌─────────────┐
-//                                       MAINCLKSELB[1:0]   │  │Systick Clock│                ┌─────┐
-//                                                          ├─▶│Divider      │───────────────▶│000  │
-//                                                          │  └─────────────┘   1m_lposc┌───▶│001  │  to Systick
-//                                                          │         ▲          ────────┘┌──▶│010  │─────────────▶
-//                                                          │         │           32k_clk │┌─▶│011  │function clock
-//                                                          │  SYSTICKFCLKDIV    ─────────┘│┌▶│111  │
-//                                                          │                     16m_irc  ││ └─────┘
-//                                                          ▼                    ──────────┘│    ▲
-//                                                      main_clk                   "none"   │    │
-//                                                                               ───────────┘    │
-//                                                                                               │
-//                                                                               SYSTICKFCLKSEL[2:0]
-//
-// -----
-//
 //                ┌────┐
 // 48/60m_irc ───▶│00  │
 //     clk_in ───▶│01  │                      ┌────┐
@@ -1657,60 +1883,6 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, WdtConfig);
 //                                                     ▼                DSPMAINRAMCLKDIV
 //                                             dsp_main_clk (to
 //                                             CLKOUT 0 select)
-//
-// -----
-//
-//               ┌────────────────┐
-// main_pll_clk  │PLL to Flexcomm │ frg_pll
-// ─────────────▶│FRG Divider     │────────▶
-//               └────────────────┘
-//                        ▲
-//                        │
-//                  FRGPLLCLKDIV
-//
-// -----
-//
-//                                          16m_clk_irc ┌─────┐
-//                                           ──────────▶│000  │
-//                                           48/60m_irc │     │
-//                                           ──────────▶│001  │
-//   main_clk ┌─────┐                     audio_pll_clk │     │
-// ──────────▶│000  │                        ──────────▶│010  │ function clock
-//    frg_pll │     │                           mclk_in │     │────────────────▶
-// ──────────▶│001  │     ┌───────────────┐  ──────────▶│011  │    of HS SPI
-//    16m_irc │     │     │Fractional Rate│   frg_clk14 │     │
-// ──────────▶│010  │────▶│Divider (FRG)  │────────────▶│100  │
-// 48/60m_irc │     │     └───────────────┘       "none"│     │
-// ──────────▶│011  │             ▲          ──────────▶│111  │
-//     "none" │     │             │                     └─────┘
-// ──────────▶│111  │       FRG14CTL[15:0]                 ▲
-//            └─────┘                                      │
-//               ▲                               HS SPI clock select
-//               │                                 FC14FCLKSEL[2:0]
-//    HS SPI FRG clock select
-//       FRG14CLKSEL[2:0]
-//
-// -----
-//
-//                                          16m_clk_irc ┌─────┐
-//                                           ──────────▶│000  │
-//                                           48/60m_irc │     │
-//                                           ──────────▶│001  │
-//   main_clk ┌─────┐                     audio_pll_clk │     │
-// ──────────▶│000  │                        ──────────▶│010  │ function clock
-//    frg_pll │     │                           mclk_in │     │────────────────▶
-// ──────────▶│001  │     ┌───────────────┐  ──────────▶│011  │   of PMIC I2C
-//    16m_irc │     │     │Fractional Rate│   frg_clk14 │     │
-// ──────────▶│010  │────▶│Divider (FRG)  │────────────▶│100  │
-// 48/60m_irc │     │     └───────────────┘       "none"│     │
-// ──────────▶│011  │             ▲          ──────────▶│111  │
-//     "none" │     │             │                     └─────┘
-// ──────────▶│111  │       FRG15CTL[15:0]                 ▲
-//            └─────┘                                      │
-//               ▲                              PMIC I2C clock select
-//               │                                 FC15FCLKSEL[2:0]
-//   PMIC I2C FRG clock select
-//       FRG15CLKSEL[2:0]
 //
 // -----
 //
@@ -1835,48 +2007,6 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, WdtConfig);
 //
 // -----
 //
-//     main clk ┌─────┐
-// ────────────▶│000  │
-// main_pll_clk │     │
-// ────────────▶│001  │
-// aux0_pll_clk │     │
-// ────────────▶│010  │        ┌─────────────┐
-//   48/60m_irc │     │        │SCTimer/PWM  │ to SCTimer/PWM
-// ────────────▶│011  │───────▶│Clock Divider│───────────────▶
-// aux1_pll_clk │     │        └─────────────┘  input clock 7
-// ────────────▶│100  │               ▲
-//audio_pll_clk │     │               │
-// ────────────▶│101  │           SCTFCLKDIV
-//       "none" │     │
-// ────────────▶│111  │
-//              └─────┘
-//                 ▲
-//                 │
-//     SCTimer/PWM clock select
-//         SCTFCLKSEL[2:0]
-//
-// -----
-//
-//     main clk ┌─────┐
-// ────────────▶│000  │
-//      16m_irc │     │
-// ────────────▶│001  │
-//   48/60m_irc │     │ function clock of
-// ────────────▶│010  │     CTIMER n
-//audio_pll_clk │     │──────────────────▶
-// ────────────▶│011  │ CTIMERs 0 thru 4
-//      mclk_in │     │
-// ────────────▶│100  │
-//       "none" │     │
-// ────────────▶│111  │
-//              └─────┘
-//                 ▲
-//                 │
-//       TIMER n clock select
-//       CT32BITnFCLKSEL[2:0]
-//
-// -----
-//
 //     1m_lposc ┌─────┐
 // ────────────▶│000  │
 //      32k_clk │     │
@@ -1890,31 +2020,6 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, WdtConfig);
 //                 │
 //      OS Timer Clock Select
 //       OSEVENTTFCLKSEL[2:0]
-//
-// -----
-//
-//   1m_lposc ┌─────┐
-// ──────────▶│000  │ to WDT0
-//     "none" │     │────────▶
-// ──────────▶│111  │   fclk
-//            └─────┘
-//               ▲
-//               │
-//       WDT0 Clock Select
-//       WDT0FCLKSEL[2:0]
-//
-// -----
-//
-//
-//   1m_lposc ┌─────┐
-// ──────────▶│000  │ to WDT1
-//     "none" │     │────────▶
-// ──────────▶│111  │   fclk
-//            └─────┘
-//               ▲
-//               │
-//       WDT1 Clock Select
-//       WDT1FCLKSEL[2:0]
 //
 // -----
 //

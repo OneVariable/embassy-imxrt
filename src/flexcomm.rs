@@ -38,7 +38,7 @@ pub enum Clock {
 }
 
 impl Clock {
-    fn into_config(&self, instance: usize) -> FlexcommConfig {
+    fn into_config(self, instance: usize) -> FlexcommConfig {
         let instance = match instance {
             0 => FlexcommInstance::Flexcomm0,
             1 => FlexcommInstance::Flexcomm1,
@@ -58,10 +58,10 @@ impl Clock {
             Clock::None => FlexcommFclkSel::None,
             Clock::Custom { frg_sel, fclk_sel, mul } => {
                 return FlexcommConfig {
-                    frg_clk_sel: *frg_sel,
-                    fc_clk_sel: *fclk_sel,
+                    frg_clk_sel: frg_sel,
+                    fc_clk_sel: fclk_sel,
                     instance,
-                    mult: *mul,
+                    mult: mul,
                 };
             }
         };

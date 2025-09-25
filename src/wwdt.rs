@@ -102,18 +102,6 @@ const fn counter_to_time(counter: u32) -> u32 {
     (counter + 1) * (US_PER_TICK * PSC)
 }
 
-/// Initializes low-power oscillator.
-fn init_lposc() {
-    // Enable low power oscillator
-    let sysctl0 = unsafe { &*crate::pac::Sysctl0::ptr() };
-    sysctl0.pdruncfg0_clr().write(|w| w.lposc_pd().set_bit());
-
-    // Wait for low-power oscillator to be ready (typically 64 us)
-    // Busy loop seems better here than trying to shoe-in an async delay
-    let clkctl0 = unsafe { &*crate::pac::Clkctl0::ptr() };
-    while clkctl0.lposcctl0().read().clkrdy().bit_is_clear() {}
-}
-
 impl<'d> WindowedWatchdog<'d> {
     /// Creates a WWDT (Windowed Watchdog Timer) instance with a given timeout value in microseconds.
     ///

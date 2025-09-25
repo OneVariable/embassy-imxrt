@@ -114,7 +114,8 @@ impl<'d> Rng<'d> {
     ) -> Self
     where
     {
-        enable_and_reset::<T>(&NoConfig);
+        // "NoConfig" peripherals can't fail, we can ignore the result.
+        _ = enable_and_reset::<T>(&NoConfig);
 
         let mut random = Self {
             info: T::info(),

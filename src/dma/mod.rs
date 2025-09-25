@@ -109,7 +109,8 @@ pub(crate) fn init() {
     let sysctl0 = unsafe { crate::pac::Sysctl0::steal() };
     let dmactl0 = unsafe { crate::pac::Dma0::steal() };
 
-    enable_and_reset::<DMA0>(&NoConfig);
+    // "NoConfig" peripherals can't fail, we can ignore the result.
+    _ = enable_and_reset::<DMA0>(&NoConfig);
 
     // Enable DMA controller
     dmactl0.ctrl().modify(|_, w| w.enable().set_bit());

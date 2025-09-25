@@ -11,7 +11,6 @@ use crate::clocks::{
     clock_freq, enable_and_reset, CTimerInstance, CTimerSel, ClockError, CtimerConfig, NoConfig, SysconPeripheral,
 };
 use crate::iopctl::{DriveMode, DriveStrength, Inverter, IopctlPin as Pin, Pull, SlewRate};
-use crate::pac::Clkctl1;
 use crate::pwm::{CentiPercent, Hertz, MicroSeconds};
 use crate::{interrupt, peripherals, Peri, PeripheralType};
 

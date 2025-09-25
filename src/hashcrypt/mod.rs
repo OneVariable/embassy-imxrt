@@ -99,7 +99,8 @@ impl From<Algorithm> for u8 {
 impl<'d, M: Mode> Hashcrypt<'d, M> {
     /// Instantiate new Hashcrypt peripheral
     fn new_inner<T: Instance>(_peripheral: Peri<'d, T>, dma_ch: Option<dma::channel::Channel<'d>>) -> Self {
-        enable_and_reset::<HASHCRYPT>(&NoConfig);
+        // NoConfig clocks can't fail
+        _ = enable_and_reset::<HASHCRYPT>(&NoConfig);
 
         Self {
             _ownership: PhantomData,
