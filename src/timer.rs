@@ -161,6 +161,7 @@ pub struct CountingTimer<M: Mode> {
 struct Info {
     regs: &'static crate::pac::ctimer0::RegisterBlock,
     inputmux: &'static crate::pac::inputmux::RegisterBlock,
+    freq: &'static AtomicU32,
     module: usize,
     channel: usize,
 }
@@ -360,7 +361,7 @@ impl Info {
     }
 
     fn pwm_get_clock_freq(&self) -> u32 {
-        todo!()
+        self.freq.load(Ordering::Relaxed)
     }
 
     fn pwm_configure(&self, period: u32) {
@@ -403,6 +404,7 @@ macro_rules! impl_instance {
                         inputmux: unsafe { &*crate::pac::Inputmux::ptr() },
                         module: $n,
                         channel: $channel,
+                        freq: &[<CTIMER $n _CLK>],
                     }
                 }
             }
@@ -415,6 +417,7 @@ macro_rules! impl_instance {
                         inputmux: unsafe { &*crate::pac::Inputmux::ptr() },
                         module: $n,
                         channel: $channel,
+                        freq: &[<CTIMER $n _CLK>],
                     }
                 }
             }
@@ -1077,7 +1080,8 @@ struct TimerClocks {
     ctimer4: u32,
 }
 
-/// Initializes the timer modules and returns a `CTimerManager` in the initialized state.
+/// Initializes the timer modules and returns a `TimerClocks` containing the base
+/// frequency of all timers.
 fn enable_all() -> core::result::Result<TimerClocks, ClockError> {
     let ctimer0 = enable_and_reset::<peripherals::CTIMER0_COUNT_CHANNEL0>(&CtimerConfig {
         source: CTimerSel::SfroClk,
@@ -1117,6 +1121,7 @@ static CTIMER4_CLK: AtomicU32 = AtomicU32::new(0);
 
 pub fn init() {
     let clocks = enable_all().expect("Initializing timers should not fail");
+    // TODO: "swap" and ensure clocks not previously initialized?
     CTIMER0_CLK.store(clocks.ctimer0, Ordering::Relaxed);
     CTIMER1_CLK.store(clocks.ctimer1, Ordering::Relaxed);
     CTIMER2_CLK.store(clocks.ctimer2, Ordering::Relaxed);
