@@ -72,6 +72,7 @@ impl Default for Config {
 
 impl<'d> Crc<'d> {
     /// Instantiates new CRC peripheral and initializes to default values.
+    #[allow(private_bounds)]
     pub fn new<T: Instance + SealedSysconPeripheral<SysconPeriphConfig = NoConfig>>(_peripheral: Peri<'d, T>, config: Config) -> Self {
         // enable CRC clock
         //

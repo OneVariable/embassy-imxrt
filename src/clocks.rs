@@ -1118,8 +1118,7 @@ pub trait SPConfHelper {
 }
 
 ///Trait to expose perph clocks
-// TODO: pub?
-pub trait SealedSysconPeripheral {
+pub(crate) trait SealedSysconPeripheral {
     type SysconPeriphConfig: SPConfHelper;
 
     fn enable_perph_clock();
@@ -1136,7 +1135,7 @@ pub trait SysconPeripheral: SealedSysconPeripheral + 'static {}
 /// # Safety
 ///
 /// Peripheral must not be in use.
-pub fn enable_and_reset<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Result<u32, ClockError> {
+pub(crate) fn enable_and_reset<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Result<u32, ClockError> {
     T::enable_perph_clock();
     let freq = critical_section::with(|cs| {
         let clocks = CLOCKS.borrow_ref(cs);

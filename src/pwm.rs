@@ -113,6 +113,7 @@ mod sealed {
     use crate::clocks::{Sct0Config, SealedSysconPeripheral, SysconPeripheral};
     use crate::PeripheralType;
 
+    #[allow(private_bounds)]
     pub trait SCTimer
     where
         Self: PeripheralType + SysconPeripheral,

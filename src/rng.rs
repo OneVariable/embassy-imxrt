@@ -108,6 +108,7 @@ fn sw_entropy_test(entropy: &[u32]) -> Result<(), Error> {
 
 impl<'d> Rng<'d> {
     /// Create a new RNG driver.
+    #[allow(private_bounds)]
     pub fn new<T: Instance + SysconPeripheral<SysconPeriphConfig = NoConfig>>(
         _inner: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
