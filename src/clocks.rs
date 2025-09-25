@@ -1156,11 +1156,6 @@ pub fn disable<T: SysconPeripheral>() {
     T::disable_perph_clock();
 }
 
-// TODO: we should remove this, in favor of the config stuff?
-pub fn clock_freq<T: SysconPeripheral>() -> u32 {
-    todo!()
-}
-
 /// Placeholder Config for peripherals that are not implemented yet, but definitely
 /// require some kind of "pre-flight check" to ensure upstream clocks are enabled and
 /// select/divs are made.
