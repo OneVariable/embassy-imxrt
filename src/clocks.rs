@@ -33,7 +33,7 @@ pub struct Clocks {
     pub _32k_clk: StaticClock<32_768>,
     /// 32kHz "wake clock", can be sourced from either the RTC oscillator,
     /// or a divided version of the 1m_lposc
-    pub _32k_wake_clk: StaticClock<32_768>,
+    pub _32k_wake_clk: Option<u32>,
     /// "FFRO", a higher power, +/- 1%, 48- or 60-MHz internal oscillator
     /// clock source
     pub _48_60m_irc: Option<u32>,
@@ -516,18 +516,14 @@ impl ClockOperator<'_> {
     }
 
     /// ```text
-    ///                                                    1m_lposc
-    ///                   ┌─────────────────────────────────────────▶
-    ///                   │           32k_clk
-    ///                   │           ───────┐
-    ///  ┌──────────┐     │   ┌─────────┐    │  ┌─────┐
-    ///  │1 MHz low │     │   │divide by│    └─▶│000  │ 32k_wake_clk
-    ///  │power osc.│─────┴──▶│   32    │ ─────▶│001  │─────────────▶
-    ///  └──────────┘         └─────────┘    ┌─▶│111  │
-    ///        ▲                      "none" │  └─────┘
-    ///        │                      ───────┘     ▲
-    /// PDRUNCFG0[14],                             │
-    /// PDSLEEPCFG0[14]                  WAKECLK32KHZSEL[2:0]
+    ///  ┌──────────┐
+    ///  │1 MHz low │
+    ///  │power osc.│───▶ 1m_lposc
+    ///  └──────────┘
+    ///        ▲
+    ///        │
+    /// PDRUNCFG0[14],
+    /// PDSLEEPCFG0[14]
     /// ```
     fn ensure_1mhz_lposc_active(&mut self) -> Result<u32, ClockError> {
         if !self.clocks._1m_lposc.enabled {
@@ -1007,12 +1003,42 @@ impl ClockOperator<'_> {
         self.clocks.frg_pll_clk = Some(pll_freq / (div as u32 + 1));
         Ok(())
     }
+
+    /// ```text
+    ///                     32k_clk
+    ///                     ───────┐
+    ///             ┌─────────┐    │  ┌─────┐
+    ///             │divide by│    └─▶│000  │ 32k_wake_clk
+    /// 1m_lposc ──▶│   32    │ ─────▶│001  │─────────────▶
+    ///             └─────────┘    ┌─▶│111  │
+    ///                     "none" │  └─────┘
+    ///                     ───────┘     ▲
+    ///                                  │
+    ///                        WAKECLK32KHZSEL[2:0]
+    /// ```
+    fn setup_32k_wake_clk(&mut self) -> Result<u32, ClockError> {
+        let freq = match self.config._32k_wake_clk_select {
+            _32kWakeClkSelect::Off => 0,
+            _32kWakeClkSelect::_32kClk => self.ensure_32kclk_active()?,
+            _32kWakeClkSelect::Lp32k => {
+                self.ensure_1mhz_lposc_active()? / 32
+            },
+        };
+        self.clkctl0
+            .wakeclk32khzsel()
+            .write(|w| unsafe { w.sel().bits(self.config._32k_wake_clk_select as u8) });
+
+        if freq != 0 {
+            self.clocks._32k_wake_clk = Some(freq);
+        }
+        Ok(freq)
+    }
 }
 
 /// SAFETY: must be called exactly once at bootup
-pub(crate) unsafe fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
+pub(crate) fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
     // TODO: When enabling clocks, wait the appropriate time
-
+    //
     // Ensure we haven't already configured the clocks
     critical_section::with(|cs| {
         if CLOCKS.borrow_ref(cs).is_some() {
@@ -1026,16 +1052,18 @@ pub(crate) unsafe fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Re
     let mut operator = ClockOperator {
         config: &config,
         clocks: &mut clocks,
-        clkctl0: pac::Clkctl0::steal(),
-        sysctl0: pac::Sysctl0::steal(),
-        clkctl1: pac::Clkctl1::steal(),
+        clkctl0: unsafe { pac::Clkctl0::steal() },
+        sysctl0: unsafe { pac::Sysctl0::steal() },
+        clkctl1: unsafe { pac::Clkctl1::steal() },
         // sysctl1: pac::Sysctl1::steal(),
     };
 
     // If necessary, set up the clock-in
     operator.setup_clock_in(clk_in_select);
 
+    // Set up the main pll, if requested
     let pll_output_freq = operator.setup_main_pll(config.main_pll)?;
+    // Set up downstream plls, if requested
     if let Some((freq, main_pll)) = pll_output_freq {
         operator.setup_pll_pfd0(&main_pll, freq)?;
         operator.setup_pll_pfd1(&main_pll, freq)?;
@@ -1057,13 +1085,23 @@ pub(crate) unsafe fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Re
     // Setup frg_pll_div
     operator.setup_frg_pll_div()?;
 
+    // Ensure some core clocks are enabled, as we can't predict now what
+    // other peripherals will want later. Ignore errors if not indicated
+    // by the config.
+    //
+    // If the clocks have already been enabled, this is a nop.
+    // If the clocks haven't been enabled, but aren't set in config:
+    //  we'll ignore the err.
+    // If the clocks haven't been enabled, but are set in the config:
+    //  we'll enable them now, as long as their inputs are active.
+    _ = operator.ensure_1mhz_lposc_active();
+    _ = operator.ensure_48_60mhz_irc_active();
+    _ = operator.ensure_16mhz_irc_active();
+    _ = operator.ensure_main_pll_active();
+    _ = operator.ensure_32kclk_active();
+
     // Optionally enable the 32k_wake_clk
-    // TODO(AJM): a better organization for this?
-    operator
-        .clkctl0
-        .wakeclk32khzsel()
-        .write(|w| w.sel().bits(config._32k_wake_clk_select as u8));
-    clocks._32k_wake_clk.enabled = !config._32k_wake_clk_select.is_off();
+    operator.setup_32k_wake_clk()?;
 
     // Store the configured clocks object statically so we can retrieve it to
     // check coherency later
@@ -1109,16 +1147,6 @@ pub fn enable_and_reset<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Res
     Ok(freq)
 }
 
-// /// Enables peripheral `T`.
-// pub fn enable<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Result<u32, ClockError> {
-//     T::enable_perph_clock(cfg)
-// }
-
-// /// Reset peripheral `T`.
-// pub fn reset<T: SysconPeripheral>() {
-//     T::reset_perph();
-// }
-
 /// Disables peripheral `T`.
 ///
 /// # Safety
@@ -1137,12 +1165,12 @@ pub fn clock_freq<T: SysconPeripheral>() -> u32 {
 /// require some kind of "pre-flight check" to ensure upstream clocks are enabled and
 /// select/divs are made.
 mod sealed {
-    use super::SPConfHelper;
+    use super::{ClockError, SPConfHelper};
 
     pub struct UnimplementedConfig;
     impl SPConfHelper for UnimplementedConfig {
-        fn post_enable_config(&self, _clocks: &super::Clocks) -> Result<u32, super::ClockError> {
-            todo!()
+        fn post_enable_config(&self, _clocks: &super::Clocks) -> Result<u32, ClockError> {
+            Err(ClockError::prog_err("peripheral not implemented"))
         }
     }
 }
@@ -1735,7 +1763,6 @@ impl_perph_clk!(ADC0, Clkctl0, pscctl1, Rstctl0, prstctl1, 16, AdcConfig);
 // TODO: Ensure that CASPER SRAM is also enabled prior to starting CASPER?
 impl_perph_clk!(CASPER, Clkctl0, pscctl0, Rstctl0, prstctl0, 9, UnimplementedConfig);
 impl_perph_clk!(CRC, Clkctl1, pscctl1, Rstctl1, prstctl1, 16, NoConfig);
-// TODO: (S)CTIMERn have CLKSEL/CLKDIV registers that require setting
 impl_perph_clk!(
     CTIMER0_COUNT_CHANNEL0,
     Clkctl1,
@@ -1790,7 +1817,6 @@ impl_perph_clk!(DMIC0, Clkctl1, pscctl0, Rstctl1, prstctl0, 24, UnimplementedCon
 #[cfg(feature = "_espi")]
 impl_perph_clk!(ESPI, Clkctl0, pscctl1, Rstctl0, prstctl1, 7, UnimplementedConfig);
 
-// TODO: ALL of the FLEXCOMMn peripherals have upstream configuration required
 impl_perph_clk!(FLEXCOMM0, Clkctl1, pscctl0, Rstctl1, prstctl0, 8, FlexcommConfig);
 impl_perph_clk!(FLEXCOMM1, Clkctl1, pscctl0, Rstctl1, prstctl0, 9, FlexcommConfig);
 impl_perph_clk!(FLEXCOMM14, Clkctl1, pscctl0, Rstctl1, prstctl0, 22, FlexcommConfig14);
@@ -1832,7 +1858,6 @@ impl_perph_clk!(PUF, Clkctl0, pscctl0, Rstctl0, prstctl0, 11, UnimplementedConfi
 impl_perph_clk!(RNG, Clkctl0, pscctl0, Rstctl0, prstctl0, 12, NoConfig);
 // TODO: We need to ensure the RTC oscillator is enabled (I think)
 impl_perph_clk!(RTC, Clkctl1, pscctl2, Rstctl1, prstctl2, 7, UnimplementedConfig);
-// TODO: SCT has pin/clock selection for feeding it
 impl_perph_clk!(SCT0, Clkctl0, pscctl0, Rstctl0, prstctl0, 24, Sct0Config);
 impl_perph_clk!(SECGPIO, Clkctl0, pscctl1, Rstctl0, prstctl1, 24, NoConfig);
 impl_perph_clk!(SEMA42, Clkctl1, pscctl1, Rstctl1, prstctl1, 29, NoConfig);
@@ -1847,7 +1872,6 @@ impl_perph_clk!(USDHC0, Clkctl0, pscctl1, Rstctl0, prstctl1, 2, UnimplementedCon
 impl_perph_clk!(USDHC1, Clkctl0, pscctl1, Rstctl0, prstctl1, 3, UnimplementedConfig);
 // TODO: UTICK0 (Micro-Tick) has clock selection requirements
 impl_perph_clk!(UTICK0, Clkctl0, pscctl2, Rstctl0, prstctl2, 0, UnimplementedConfig);
-// TODO: WDTn has clock selection requirements
 impl_perph_clk!(WDT0, Clkctl0, pscctl2, Rstctl0, prstctl2, 1, WdtConfig);
 impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, WdtConfig);
 
