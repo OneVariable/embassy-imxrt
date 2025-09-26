@@ -61,6 +61,8 @@ pub struct Clocks {
     pub sys_cpu_ahb_clk: Option<u32>,
     /// The output of FRGPLLCLKDIV, fed by main_pll_clk
     pub frg_pll_clk: Option<u32>,
+    /// The clk_out output
+    pub clk_out: Option<u32>,
     //
     // --- These clocks have not been configured yet ---
     // // We probably SHOULD (allow for) configuration of these clocks:
@@ -102,6 +104,11 @@ impl Clocks {
     fn ensure_48_60_ffro(&self) -> Result<u32, ClockError> {
         self._48_60m_irc
             .ok_or_else(|| ClockError::bad_config("48/60m_irc/ffro needed but not enabled"))
+    }
+
+    fn ensure_dsp_pll(&self) -> Result<u32, ClockError> {
+        self.dsp_pll_clk
+            .ok_or_else(|| ClockError::bad_config("dsp pll needed but not enabled"))
     }
 
     fn ensure_aux0_pll(&self) -> Result<u32, ClockError> {
@@ -146,6 +153,45 @@ impl<const F: u32> From<StaticClock<F>> for Option<u32> {
     }
 }
 
+//      16m_irc ┌─────┐                          ┌─────┐
+// ────────────▶│000  │      ┌──────────────────▶│000  │
+//       clk_in │     │      │      main_pll_clk │     │
+// ────────────▶│001  │      │      ────────────▶│001  │
+//     1m_lposc │     │      │      aux0_pll_clk │     │
+// ────────────▶│010  │      │      ────────────▶│010  │
+//   48/60m_irc │     │──────┘       dsp_pll_clk │     │    ┌───────┐
+// ────────────▶│011  │             ────────────▶│011  │    │CLKOUT │    CLKOUT
+//     main_clk │     │             aux1_pll_clk │     │───▶│Divider│────────────▶
+// ────────────▶│100  │             ────────────▶│100  │    └───────┘
+// dsp_main_clk │     │            audio_pll_clk │     │        ▲
+// ────────────▶│110  │             ────────────▶│101  │        │
+//              └─────┘                  32k_clk │     │    CLKOUTDIV
+//                 ▲                ────────────▶│110  │
+//                 │                      "none" │     │
+//         CLKOUT 0 select          ────────────▶│111  │
+//         CLKOUTSEL0[2:0]                       └─────┘
+//                                                  ▲
+//                                                  │
+//                                          CLKOUT 1 select
+//                                          CLKOUTSEL1[2:0]
+#[derive(Copy, Clone, Default, Debug)]
+pub enum ClockOutSource {
+    M16Irc,
+    ClkIn,
+    M1Lposc,
+    M4860Irc,
+    MainClk,
+    DspMainClk,
+    MainPllClk,
+    Aux0PllClk,
+    DspPllClk,
+    Aux1PllClk,
+    AudioPllClk,
+    K32Clk,
+    #[default]
+    None,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ClockConfig {
     /// Clock coming from RTC crystal oscillator
@@ -160,6 +206,8 @@ pub struct ClockConfig {
     pub sys_cpu_ahb_div: u8,
     /// Division of FRGPLLCLKDIV, main_pll_clk divided by (1 + frg_clk_pll_div)
     pub frg_clk_pll_div: Option<u8>,
+    pub clk_out_select: ClockOutSource,
+    pub clk_out_div: Option<u8>,
 }
 
 impl Default for ClockConfig {
@@ -971,7 +1019,7 @@ impl ClockOperator<'_> {
         self.clocks.aux1_pll_clk = None;
     }
 
-    fn ensure_main_pll_active(&self) -> Result<u32, ClockError> {
+    fn ensure_main_pll_clk_active(&self) -> Result<u32, ClockError> {
         if let Some(f) = self.clocks.main_pll_clk {
             Ok(f)
         } else {
@@ -994,7 +1042,7 @@ impl ClockOperator<'_> {
         let Some(div) = self.config.frg_clk_pll_div else {
             return Ok(());
         };
-        let pll_freq = self.ensure_main_pll_active()?;
+        let pll_freq = self.ensure_main_pll_clk_active()?;
         // TODO: Enforce max rate of 280_000_000
         if self.clkctl1.frgpllclkdiv().read().div() != div {
             self.clkctl1.frgpllclkdiv().modify(|_r, w| unsafe { w.div().bits(div) });
@@ -1021,8 +1069,10 @@ impl ClockOperator<'_> {
             _32kWakeClkSelect::Off => 0,
             _32kWakeClkSelect::_32kClk => self.ensure_32kclk_active()?,
             _32kWakeClkSelect::Lp32k => {
+                // Interestingly, 1_000_000 / 32 is 31250, NOT 32768. It's
+                // only 4.8% off, though the 1mhz lposc is ALSO +/-10%.
                 self.ensure_1mhz_lposc_active()? / 32
-            },
+            }
         };
         self.clkctl0
             .wakeclk32khzsel()
@@ -1030,9 +1080,144 @@ impl ClockOperator<'_> {
 
         if freq != 0 {
             self.clocks._32k_wake_clk = Some(freq);
+        } else {
+            self.clocks._32k_wake_clk = None;
         }
         Ok(freq)
     }
+
+    //      16m_irc ┌─────┐                          ┌─────┐
+    // ────────────▶│000  │      ┌──────────────────▶│000  │
+    //       clk_in │     │      │      main_pll_clk │     │
+    // ────────────▶│001  │      │      ────────────▶│001  │
+    //     1m_lposc │     │      │      aux0_pll_clk │     │
+    // ────────────▶│010  │      │      ────────────▶│010  │
+    //   48/60m_irc │     │──────┘       dsp_pll_clk │     │    ┌───────┐
+    // ────────────▶│011  │             ────────────▶│011  │    │CLKOUT │    CLKOUT
+    //     main_clk │     │             aux1_pll_clk │     │───▶│Divider│────────────▶
+    // ────────────▶│100  │             ────────────▶│100  │    └───────┘
+    // dsp_main_clk │     │            audio_pll_clk │     │        ▲
+    // ────────────▶│110  │             ────────────▶│101  │        │
+    //              └─────┘                  32k_clk │     │    CLKOUTDIV
+    //                 ▲                ────────────▶│110  │
+    //                 │                      "none" │     │
+    //         CLKOUT 0 select          ────────────▶│111  │
+    //         CLKOUTSEL0[2:0]                       └─────┘
+    //                                                  ▲
+    //                                                  │
+    //                                          CLKOUT 1 select
+    //                                          CLKOUTSEL1[2:0]
+    pub fn setup_clock_out(&mut self) -> Result<u32, ClockError> {
+        let Some(div) = self.config.clk_out_div else {
+            self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().none());
+            self.clocks.clk_out = None;
+            return Ok(0);
+        };
+
+        let mut freq = match self.config.clk_out_select {
+            ClockOutSource::M16Irc => {
+                let freq = self.ensure_16mhz_irc_active()?;
+                self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().sfro_clk());
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
+                freq
+            }
+            ClockOutSource::ClkIn => {
+                let freq = self.ensure_clk_in_active()?;
+                self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().xtalin_clk());
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
+                freq
+            }
+            ClockOutSource::M1Lposc => {
+                let freq = self.ensure_1mhz_lposc_active()?;
+                self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().lposc());
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
+                freq
+            }
+            ClockOutSource::M4860Irc => {
+                let freq = self.ensure_48_60mhz_irc_active()?;
+                self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().ffro_clk());
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
+                freq
+            }
+            ClockOutSource::MainClk => {
+                let freq = self.clocks.main_clk;
+                self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().main_clk());
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
+                freq
+            }
+            ClockOutSource::DspMainClk => {
+                return Err(ClockError::prog_err("dsp_main_clk not implemented"));
+            }
+            ClockOutSource::MainPllClk => {
+                let freq = self.ensure_main_pll_clk_active()?;
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().main_pll_clk());
+                freq
+            }
+            ClockOutSource::Aux0PllClk => {
+                let freq = self.clocks.ensure_aux0_pll()?;
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().syspll0_aux0_pll_clk());
+                freq
+            }
+            ClockOutSource::DspPllClk => {
+                let freq = self.clocks.ensure_dsp_pll()?;
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().dsp_pll_clk());
+                freq
+            }
+            ClockOutSource::Aux1PllClk => {
+                let freq = self.clocks.ensure_aux0_pll()?;
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().syspll0_aux0_pll_clk());
+                freq
+            }
+            ClockOutSource::AudioPllClk => {
+                return Err(ClockError::prog_err("audio_pll_clk not implemented"));
+            }
+            ClockOutSource::K32Clk => {
+                let freq = self.ensure_32kclk_active()?;
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().rtc_clk_32khz());
+                freq
+            }
+            ClockOutSource::None => {
+                self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().none());
+                return Ok(0);
+            }
+        };
+
+        self.clkctl1
+            .clkoutdiv()
+            .modify(|_, w| w.halt().set_bit().reset().set_bit());
+        self.clkctl1.clkoutdiv().modify(|_, w| unsafe { w.div().bits(div) });
+        self.clkctl1.clkoutdiv().modify(|_, w| w.halt().clear_bit());
+        while self.clkctl1.clkoutdiv().read().reqflag().bit_is_set() {}
+        freq /= 1u32 + div as u32;
+        self.clocks.clk_out = Some(freq);
+
+        Ok(freq)
+    }
+
+    fn ensure_clk_in_active(&self) -> Result<u32, ClockError> {
+        self.clocks
+            .clk_in
+            .ok_or_else(|| ClockError::bad_config("clk_in required but not configured"))
+    }
+}
+
+/// In MOST cases, peripherals should determine their clock frequency by calling
+/// `enable_and_reset::<T>`, which will return the clock frequency of their peripheral.
+///
+/// For cases where you REALLY want to view the full clock state (or at least the portion
+/// covered by `init()`), this function can be used to view the clocks.
+///
+/// This function runs the provided closure *inside of a critical section*, so move with
+/// purpose! You can clone-out the Clocks struct if necessary, or perform a more directed
+/// query and return that instead.
+///
+/// Returns `None` if the clocks have not yet been initialized.
+pub fn with_clocks<F: FnOnce(&Clocks) -> R, R>(f: F) -> Option<R> {
+    critical_section::with(|cs| {
+        let c = CLOCKS.borrow_ref(cs);
+        let c = c.as_ref()?;
+        Some(f(c))
+    })
 }
 
 /// SAFETY: must be called exactly once at bootup
@@ -1097,11 +1282,14 @@ pub(crate) fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<()
     _ = operator.ensure_1mhz_lposc_active();
     _ = operator.ensure_48_60mhz_irc_active();
     _ = operator.ensure_16mhz_irc_active();
-    _ = operator.ensure_main_pll_active();
+    _ = operator.ensure_main_pll_clk_active();
     _ = operator.ensure_32kclk_active();
 
     // Optionally enable the 32k_wake_clk
     operator.setup_32k_wake_clk()?;
+
+    // Finally, setup clk_out
+    operator.setup_clock_out()?;
 
     // Store the configured clocks object statically so we can retrieve it to
     // check coherency later
@@ -1546,7 +1734,7 @@ impl SPConfHelper for Sct0Config {
             }
             SCTClockSource::FFRO => {
                 // FFRO/48_60mhz may not be enabled
-                let freq = clocks._48_60m_irc.ok_or(ClockError::bad_config("ffro needed"))?;
+                let freq = clocks.ensure_48_60_ffro()?;
                 clkctl0.sctfclksel().write(|w| w.sel().ffro_clk());
                 freq
             }
@@ -2093,29 +2281,5 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, WdtConfig);
 //                  │
 //         DMIC Clock Select
 //         DMIC0FCLKSEL[2:0]
-//
-// -----
-//
-//      16m_irc ┌─────┐                          ┌─────┐
-// ────────────▶│000  │      ┌──────────────────▶│000  │
-//       clk_in │     │      │      main_pll_clk │     │
-// ────────────▶│001  │      │      ────────────▶│001  │
-//     1m_lposc │     │      │      aux0_pll_clk │     │
-// ────────────▶│010  │      │      ────────────▶│010  │
-//   48/60m_irc │     │──────┘       dsp_pll_clk │     │    ┌───────┐
-// ────────────▶│011  │             ────────────▶│011  │    │CLKOUT │    CLKOUT
-//     main_clk │     │             aux1_pll_clk │     │───▶│Divider│────────────▶
-// ────────────▶│100  │             ────────────▶│100  │    └───────┘
-// dsp_main_clk │     │            audio_pll_clk │     │        ▲
-// ────────────▶│110  │             ────────────▶│101  │        │
-//              └─────┘                  32k_clk │     │    CLKOUTDIV
-//                 ▲                ────────────▶│110  │
-//                 │                      "none" │     │
-//         CLKOUT 0 select          ────────────▶│111  │
-//         CLKOUTSEL0[2:0]                       └─────┘
-//                                                  ▲
-//                                                  │
-//                                          CLKOUT 1 select
-//                                          CLKOUTSEL1[2:0]
 //
 // -----
