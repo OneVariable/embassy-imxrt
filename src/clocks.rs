@@ -20,6 +20,7 @@ use crate::peripherals::{PIO0_25, PIO2_15, PIO2_30};
 const WORST_CASE_TICKS_PER_US: u32 = 300;
 static CLOCKS: Mutex<RefCell<Option<Clocks>>> = Mutex::new(RefCell::new(None));
 
+/// STATE AFTER INIT: EXPLAIN
 #[derive(Debug, Clone, Default)]
 pub struct Clocks {
     /// "LPOSC", a very low power (but less accurate, +/- 10%) clock
@@ -153,29 +154,32 @@ impl<const F: u32> From<StaticClock<F>> for Option<u32> {
     }
 }
 
-//      16m_irc ┌─────┐                          ┌─────┐
-// ────────────▶│000  │      ┌──────────────────▶│000  │
-//       clk_in │     │      │      main_pll_clk │     │
-// ────────────▶│001  │      │      ────────────▶│001  │
-//     1m_lposc │     │      │      aux0_pll_clk │     │
-// ────────────▶│010  │      │      ────────────▶│010  │
-//   48/60m_irc │     │──────┘       dsp_pll_clk │     │    ┌───────┐
-// ────────────▶│011  │             ────────────▶│011  │    │CLKOUT │    CLKOUT
-//     main_clk │     │             aux1_pll_clk │     │───▶│Divider│────────────▶
-// ────────────▶│100  │             ────────────▶│100  │    └───────┘
-// dsp_main_clk │     │            audio_pll_clk │     │        ▲
-// ────────────▶│110  │             ────────────▶│101  │        │
-//              └─────┘                  32k_clk │     │    CLKOUTDIV
-//                 ▲                ────────────▶│110  │
-//                 │                      "none" │     │
-//         CLKOUT 0 select          ────────────▶│111  │
-//         CLKOUTSEL0[2:0]                       └─────┘
-//                                                  ▲
-//                                                  │
-//                                          CLKOUT 1 select
-//                                          CLKOUTSEL1[2:0]
+/// ```text
+///      16m_irc ┌─────┐                          ┌─────┐
+/// ────────────▶│000  │      ┌──────────────────▶│000  │
+///       clk_in │     │      │      main_pll_clk │     │
+/// ────────────▶│001  │      │      ────────────▶│001  │
+///     1m_lposc │     │      │      aux0_pll_clk │     │
+/// ────────────▶│010  │      │      ────────────▶│010  │
+///   48/60m_irc │     │──────┘       dsp_pll_clk │     │    ┌───────┐
+/// ────────────▶│011  │             ────────────▶│011  │    │CLKOUT │    CLKOUT
+///     main_clk │     │             aux1_pll_clk │     │───▶│Divider│────────────▶
+/// ────────────▶│100  │             ────────────▶│100  │    └───────┘
+/// dsp_main_clk │     │            audio_pll_clk │     │        ▲
+/// ────────────▶│110  │             ────────────▶│101  │        │
+///              └─────┘                  32k_clk │     │    CLKOUTDIV
+///                 ▲                ────────────▶│110  │
+///                 │                      "none" │     │
+///         CLKOUT 0 select          ────────────▶│111  │
+///         CLKOUTSEL0[2:0]                       └─────┘
+///                                                  ▲
+///                                                  │
+///                                          CLKOUT 1 select
+///                                          CLKOUTSEL1[2:0]
+/// ```
 #[derive(Copy, Clone, Default, Debug)]
 pub enum ClockOutSource {
+    /// TODO: Doc comments
     M16Irc,
     ClkIn,
     M1Lposc,
@@ -205,6 +209,8 @@ pub struct ClockConfig {
     /// Main clock divided by (1 + sys_cpu_ahb_div)
     pub sys_cpu_ahb_div: u8,
     /// Division of FRGPLLCLKDIV, main_pll_clk divided by (1 + frg_clk_pll_div)
+    /// TODO: Switch to `u16` with check? At least: MAKE IT CONSISTENT.
+    /// TODO: Check what stm32 HALs do for this kind of thing?
     pub frg_clk_pll_div: Option<u8>,
     pub clk_out_select: ClockOutSource,
     pub clk_out_div: Option<u8>,
@@ -508,6 +514,8 @@ impl ClockOperator<'_> {
         }
     }
 
+    // TODO: Make names consistent with `Clocks::ensure_*`
+
     /// ```text
     ///  ┌──────────┐
     ///  │16 MHz    │ 16m_irc
@@ -727,6 +735,7 @@ impl ClockOperator<'_> {
             MainClockSelect::_48_60MIrc => self.ensure_48_60mhz_irc_active()?,
             MainClockSelect::_16mIrc => self.ensure_16mhz_irc_active()?,
             MainClockSelect::MainPllClk => {
+                // TODO: AJM, did I implement this?
                 return Err(ClockError::bad_config(
                     "Main clock uses main_pll_clk, but main_pll_clk is not active",
                 ));
@@ -1078,6 +1087,7 @@ impl ClockOperator<'_> {
             .wakeclk32khzsel()
             .write(|w| unsafe { w.sel().bits(self.config._32k_wake_clk_select as u8) });
 
+        // TODO: Consistency "Some(0)" vs "None"
         if freq != 0 {
             self.clocks._32k_wake_clk = Some(freq);
         } else {
@@ -1220,7 +1230,7 @@ pub fn with_clocks<F: FnOnce(&Clocks) -> R, R>(f: F) -> Option<R> {
     })
 }
 
-/// SAFETY: must be called exactly once at bootup
+/// Note: must be called exactly once at bootup
 pub(crate) fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
     // TODO: When enabling clocks, wait the appropriate time
     //
@@ -1722,6 +1732,7 @@ impl SPConfHelper for Sct0Config {
             }
             SCTClockSource::MainPLL => {
                 // main_pll_may not be enabled
+                // TODO: Use ensure methods here to not dupe strings!
                 let freq = clocks.main_pll_clk.ok_or(ClockError::bad_config("main_pll needed"))?;
                 clkctl0.sctfclksel().write(|w| w.sel().main_sys_pll_clk());
                 freq
@@ -1795,6 +1806,7 @@ impl SPConfHelper for WdtConfig {
     fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
         let freq = match self.source {
             WdtClkSel::LpOsc1m => clocks.ensure_1m_lposc()?,
+            // TODO: Should we allow "None" settings? This seems a little foot-gunny.
             WdtClkSel::None => 0,
         };
         match self.instance {
