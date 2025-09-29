@@ -7,9 +7,7 @@ use paste::paste;
 use crate::clocks::periph_helpers::{FlexcommConfig, FlexcommConfig14, FlexcommConfig15, FlexcommInstance};
 use crate::clocks::{
     disable, enable_and_reset,
-    periph_helpers::{
-        Flexcomm14FclkSel, Flexcomm14FrgSel, Flexcomm15FclkSel, Flexcomm15FrgSel, FlexcommFclkSel, FlexcommFrgSel,
-    },
+    periph_helpers::{FlexcommFclkSel, FlexcommFrgSel},
     SysconPeripheral,
 };
 use crate::peripherals::{
@@ -40,48 +38,6 @@ pub enum Clock {
         fclk_sel: FlexcommFclkSel,
         mul: u8,
     },
-}
-
-fn frgnto14(frg_sel: FlexcommFrgSel) -> Flexcomm14FrgSel {
-    match frg_sel {
-        FlexcommFrgSel::MainClk => Flexcomm14FrgSel::MainClk,
-        FlexcommFrgSel::FrgPllClk => Flexcomm14FrgSel::FrgPllClk,
-        FlexcommFrgSel::SfroClk => Flexcomm14FrgSel::SfroClk,
-        FlexcommFrgSel::FfroClk => Flexcomm14FrgSel::FfroClk,
-        FlexcommFrgSel::None => Flexcomm14FrgSel::None,
-    }
-}
-
-fn fclknto14(fclk_sel: FlexcommFclkSel) -> Flexcomm14FclkSel {
-    match fclk_sel {
-        FlexcommFclkSel::SfroClk => Flexcomm14FclkSel::SfroClk,
-        FlexcommFclkSel::FfroClk => Flexcomm14FclkSel::FfroClk,
-        FlexcommFclkSel::AudioPllClk => Flexcomm14FclkSel::AudioPllClk,
-        FlexcommFclkSel::MasterClk => Flexcomm14FclkSel::MasterClk,
-        FlexcommFclkSel::FcnFrgClk => Flexcomm14FclkSel::FcnFrgClk,
-        FlexcommFclkSel::None => Flexcomm14FclkSel::None,
-    }
-}
-
-fn frgnto15(frg_sel: FlexcommFrgSel) -> Flexcomm15FrgSel {
-    match frg_sel {
-        FlexcommFrgSel::MainClk => Flexcomm15FrgSel::MainClk,
-        FlexcommFrgSel::FrgPllClk => Flexcomm15FrgSel::FrgPllClk,
-        FlexcommFrgSel::SfroClk => Flexcomm15FrgSel::SfroClk,
-        FlexcommFrgSel::FfroClk => Flexcomm15FrgSel::FfroClk,
-        FlexcommFrgSel::None => Flexcomm15FrgSel::None,
-    }
-}
-
-fn fclknto15(fclk_sel: FlexcommFclkSel) -> Flexcomm15FclkSel {
-    match fclk_sel {
-        FlexcommFclkSel::SfroClk => Flexcomm15FclkSel::SfroClk,
-        FlexcommFclkSel::FfroClk => Flexcomm15FclkSel::FfroClk,
-        FlexcommFclkSel::AudioPllClk => Flexcomm15FclkSel::AudioPllClk,
-        FlexcommFclkSel::MasterClk => Flexcomm15FclkSel::MasterClk,
-        FlexcommFclkSel::FcnFrgClk => Flexcomm15FclkSel::FcnFrgClk,
-        FlexcommFclkSel::None => Flexcomm15FclkSel::None,
-    }
 }
 
 impl Clock {
@@ -122,21 +78,21 @@ impl Clock {
 
     fn into_config14(self) -> FlexcommConfig14 {
         let sel = match self {
-            Clock::Sfro => Flexcomm14FclkSel::SfroClk,
-            Clock::Ffro => Flexcomm14FclkSel::FfroClk,
-            Clock::AudioPll => Flexcomm14FclkSel::AudioPllClk,
-            Clock::Master => Flexcomm14FclkSel::MasterClk,
-            Clock::None => Flexcomm14FclkSel::None,
+            Clock::Sfro => FlexcommFclkSel::SfroClk,
+            Clock::Ffro => FlexcommFclkSel::FfroClk,
+            Clock::AudioPll => FlexcommFclkSel::AudioPllClk,
+            Clock::Master => FlexcommFclkSel::MasterClk,
+            Clock::None => FlexcommFclkSel::None,
             Clock::Custom { frg_sel, fclk_sel, mul } => {
                 return FlexcommConfig14 {
-                    frg_clk_sel: frgnto14(frg_sel),
-                    fc_clk_sel: fclknto14(fclk_sel),
+                    frg_clk_sel: frg_sel,
+                    fc_clk_sel: fclk_sel,
                     mult: mul,
                 };
             }
         };
         FlexcommConfig14 {
-            frg_clk_sel: Flexcomm14FrgSel::None,
+            frg_clk_sel: FlexcommFrgSel::None,
             fc_clk_sel: sel,
             mult: 0,
         }
@@ -144,21 +100,21 @@ impl Clock {
 
     fn into_config15(self) -> FlexcommConfig15 {
         let sel = match self {
-            Clock::Sfro => Flexcomm15FclkSel::SfroClk,
-            Clock::Ffro => Flexcomm15FclkSel::FfroClk,
-            Clock::AudioPll => Flexcomm15FclkSel::AudioPllClk,
-            Clock::Master => Flexcomm15FclkSel::MasterClk,
-            Clock::None => Flexcomm15FclkSel::None,
+            Clock::Sfro => FlexcommFclkSel::SfroClk,
+            Clock::Ffro => FlexcommFclkSel::FfroClk,
+            Clock::AudioPll => FlexcommFclkSel::AudioPllClk,
+            Clock::Master => FlexcommFclkSel::MasterClk,
+            Clock::None => FlexcommFclkSel::None,
             Clock::Custom { frg_sel, fclk_sel, mul } => {
                 return FlexcommConfig15 {
-                    frg_clk_sel: frgnto15(frg_sel),
-                    fc_clk_sel: fclknto15(fclk_sel),
+                    frg_clk_sel: frg_sel,
+                    fc_clk_sel: fclk_sel,
                     mult: mul,
                 };
             }
         };
         FlexcommConfig15 {
-            frg_clk_sel: Flexcomm15FrgSel::None,
+            frg_clk_sel: FlexcommFrgSel::None,
             fc_clk_sel: sel,
             mult: 0,
         }

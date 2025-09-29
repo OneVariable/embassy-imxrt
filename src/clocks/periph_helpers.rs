@@ -1,15 +1,188 @@
-use super::{ClockError, Clocks};
+#![allow(dead_code)]
 
+use super::{ClockError, Clocks};
 use crate::pac;
-pub use pac::clkctl0::adc0fclksel0::Sel as AdcSel0;
-pub use pac::clkctl0::adc0fclksel1::Sel as AdcSel1;
-pub use pac::clkctl1::ct32bitfclksel::Sel as CTimerSel;
-pub use pac::clkctl1::fc14fclksel::Sel as Flexcomm14FclkSel;
-pub use pac::clkctl1::fc15fclksel::Sel as Flexcomm15FclkSel;
-pub use pac::clkctl1::flexcomm::fcfclksel::Sel as FlexcommFclkSel;
-pub use pac::clkctl1::flexcomm::frgclksel::Sel as FlexcommFrgSel;
-pub use pac::clkctl1::frg14clksel::Sel as Flexcomm14FrgSel;
-pub use pac::clkctl1::frg15clksel::Sel as Flexcomm15FrgSel;
+
+#[derive(Debug, Copy, Clone)]
+pub enum FlexcommFrgSel {
+    /// 0: Main Clock.
+    MainClk = 0,
+    /// 1: FRG PLL Clock.
+    FrgPllClk = 1,
+    /// 2: SFRO Clock.
+    SfroClk = 2,
+    /// 3: FFRO Clock.
+    FfroClk = 3,
+    /// 7: None, this may be selected in order to reduce power when no output is needed.
+    None = 7,
+}
+
+impl FlexcommFrgSel {
+    fn into_pac(self) -> pac::clkctl1::flexcomm::frgclksel::Sel {
+        match self {
+            FlexcommFrgSel::MainClk => pac::clkctl1::flexcomm::frgclksel::Sel::MainClk,
+            FlexcommFrgSel::FrgPllClk => pac::clkctl1::flexcomm::frgclksel::Sel::FrgPllClk,
+            FlexcommFrgSel::SfroClk => pac::clkctl1::flexcomm::frgclksel::Sel::SfroClk,
+            FlexcommFrgSel::FfroClk => pac::clkctl1::flexcomm::frgclksel::Sel::FfroClk,
+            FlexcommFrgSel::None => pac::clkctl1::flexcomm::frgclksel::Sel::None,
+        }
+    }
+
+    fn into_pac14(self) -> pac::clkctl1::frg14clksel::Sel {
+        match self {
+            FlexcommFrgSel::MainClk => pac::clkctl1::frg14clksel::Sel::MainClk,
+            FlexcommFrgSel::FrgPllClk => pac::clkctl1::frg14clksel::Sel::FrgPllClk,
+            FlexcommFrgSel::SfroClk => pac::clkctl1::frg14clksel::Sel::SfroClk,
+            FlexcommFrgSel::FfroClk => pac::clkctl1::frg14clksel::Sel::FfroClk,
+            FlexcommFrgSel::None => pac::clkctl1::frg14clksel::Sel::None,
+        }
+    }
+
+    fn into_pac15(self) -> pac::clkctl1::frg15clksel::Sel {
+        match self {
+            FlexcommFrgSel::MainClk => pac::clkctl1::frg15clksel::Sel::MainClk,
+            FlexcommFrgSel::FrgPllClk => pac::clkctl1::frg15clksel::Sel::FrgPllClk,
+            FlexcommFrgSel::SfroClk => pac::clkctl1::frg15clksel::Sel::SfroClk,
+            FlexcommFrgSel::FfroClk => pac::clkctl1::frg15clksel::Sel::FfroClk,
+            FlexcommFrgSel::None => pac::clkctl1::frg15clksel::Sel::None,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum FlexcommFclkSel {
+    /// 0: SFRO Clock.
+    SfroClk = 0,
+    /// 1: FFRO Clock.
+    FfroClk = 1,
+    /// 2: Audio PLL Clock.
+    AudioPllClk = 2,
+    /// 3: Master Clock In.
+    MasterClk = 3,
+    /// 4: FCn FRG Clock.
+    FcnFrgClk = 4,
+    /// 7: None, this may be selected in order to reduce power when no output is needed.
+    None = 7,
+}
+
+impl FlexcommFclkSel {
+    fn into_pac(self) -> pac::clkctl1::flexcomm::fcfclksel::Sel {
+        match self {
+            FlexcommFclkSel::SfroClk => pac::clkctl1::flexcomm::fcfclksel::Sel::SfroClk,
+            FlexcommFclkSel::FfroClk => pac::clkctl1::flexcomm::fcfclksel::Sel::FfroClk,
+            FlexcommFclkSel::AudioPllClk => pac::clkctl1::flexcomm::fcfclksel::Sel::AudioPllClk,
+            FlexcommFclkSel::MasterClk => pac::clkctl1::flexcomm::fcfclksel::Sel::MasterClk,
+            FlexcommFclkSel::FcnFrgClk => pac::clkctl1::flexcomm::fcfclksel::Sel::FcnFrgClk,
+            FlexcommFclkSel::None => pac::clkctl1::flexcomm::fcfclksel::Sel::None,
+        }
+    }
+
+    fn into_pac14(self) -> pac::clkctl1::fc14fclksel::Sel {
+        match self {
+            FlexcommFclkSel::SfroClk => pac::clkctl1::fc14fclksel::Sel::SfroClk,
+            FlexcommFclkSel::FfroClk => pac::clkctl1::fc14fclksel::Sel::FfroClk,
+            FlexcommFclkSel::AudioPllClk => pac::clkctl1::fc14fclksel::Sel::AudioPllClk,
+            FlexcommFclkSel::MasterClk => pac::clkctl1::fc14fclksel::Sel::MasterClk,
+            FlexcommFclkSel::FcnFrgClk => pac::clkctl1::fc14fclksel::Sel::FcnFrgClk,
+            FlexcommFclkSel::None => pac::clkctl1::fc14fclksel::Sel::None,
+        }
+    }
+
+    fn into_pac15(self) -> pac::clkctl1::fc15fclksel::Sel {
+        match self {
+            FlexcommFclkSel::SfroClk => pac::clkctl1::fc15fclksel::Sel::SfroClk,
+            FlexcommFclkSel::FfroClk => pac::clkctl1::fc15fclksel::Sel::FfroClk,
+            FlexcommFclkSel::AudioPllClk => pac::clkctl1::fc15fclksel::Sel::AudioPllClk,
+            FlexcommFclkSel::MasterClk => pac::clkctl1::fc15fclksel::Sel::MasterClk,
+            FlexcommFclkSel::FcnFrgClk => pac::clkctl1::fc15fclksel::Sel::FcnFrgClk,
+            FlexcommFclkSel::None => pac::clkctl1::fc15fclksel::Sel::None,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum CTimerSel {
+    /// 0: Main Clock.
+    MainClk = 0,
+    /// 1: SFRO Clock.
+    SfroClk = 1,
+    /// 2: FFRO Clock.
+    FfroClk = 2,
+    /// 3: Audio PLL Clock.
+    AudioPllClk = 3,
+    /// 4: Master Clock In.
+    MasterClk = 4,
+    /// 5: Low Power Oscillator Clock (LPOSC).
+    Lposc = 5,
+    /// 7: None, this may be selected in order to reduce power when no output is needed.
+    None = 7,
+}
+
+impl CTimerSel {
+    fn into_pac(self) -> pac::clkctl1::ct32bitfclksel::Sel {
+        match self {
+            CTimerSel::MainClk => pac::clkctl1::ct32bitfclksel::Sel::MainClk,
+            CTimerSel::SfroClk => pac::clkctl1::ct32bitfclksel::Sel::SfroClk,
+            CTimerSel::FfroClk => pac::clkctl1::ct32bitfclksel::Sel::FfroClk,
+            CTimerSel::AudioPllClk => pac::clkctl1::ct32bitfclksel::Sel::AudioPllClk,
+            CTimerSel::MasterClk => pac::clkctl1::ct32bitfclksel::Sel::MasterClk,
+            CTimerSel::Lposc => pac::clkctl1::ct32bitfclksel::Sel::Lposc,
+            CTimerSel::None => pac::clkctl1::ct32bitfclksel::Sel::None,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum AdcSel0 {
+    /// 0: SFRO Clock.
+    SfroClk,
+    /// 1: XTALIN Clock.
+    XtalinClk,
+    /// 2: Low Power Oscillator Clock (LPOSC).
+    Lposc,
+    /// 3: FFRO Clock.
+    FfroClk,
+    /// 7: None, this may be selected in order to reduce power when no output is needed.
+    None,
+}
+
+impl AdcSel0 {
+    fn into_pac(self) -> pac::clkctl0::adc0fclksel0::Sel {
+        match self {
+            AdcSel0::SfroClk => pac::clkctl0::adc0fclksel0::Sel::SfroClk,
+            AdcSel0::XtalinClk => pac::clkctl0::adc0fclksel0::Sel::XtalinClk,
+            AdcSel0::Lposc => pac::clkctl0::adc0fclksel0::Sel::Lposc,
+            AdcSel0::FfroClk => pac::clkctl0::adc0fclksel0::Sel::FfroClk,
+            AdcSel0::None => pac::clkctl0::adc0fclksel0::Sel::None,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum AdcSel1 {
+    /// 0: ADC0FCLKSEL0 Multiplexed Output.
+    Adc0fclksel0MuxOut,
+    /// 1: SYSPLL0 MAIN_CLK (PFD0 Output)
+    Syspll0MainClk,
+    /// 3: SYSPLL0 AUX0_PLL_Clock.
+    Syspll0Aux0PllClock,
+    /// 5: SYSPLL0 AUX1_PLL_Clock.
+    Syspll0Aux1PllClock,
+    /// 7: None, this may be selected in order to reduce power when no output is needed.
+    None,
+}
+
+impl AdcSel1 {
+    fn into_pac(self) -> pac::clkctl0::adc0fclksel1::Sel {
+        match self {
+            AdcSel1::Adc0fclksel0MuxOut => pac::clkctl0::adc0fclksel1::Sel::Adc0fclksel0MuxOut,
+            AdcSel1::Syspll0MainClk => pac::clkctl0::adc0fclksel1::Sel::Syspll0MainClk,
+            AdcSel1::Syspll0Aux0PllClock => pac::clkctl0::adc0fclksel1::Sel::Syspll0Aux0PllClock,
+            AdcSel1::Syspll0Aux1PllClock => pac::clkctl0::adc0fclksel1::Sel::Syspll0Aux1PllClock,
+            AdcSel1::None => pac::clkctl0::adc0fclksel1::Sel::None,
+        }
+    }
+}
 
 pub trait SPConfHelper {
     /// This method is called AFTER `T::enable_perph_clock()`, and BEFORE
@@ -83,7 +256,9 @@ impl SPConfHelper for FlexcommConfig {
                     FlexcommFrgSel::FfroClk => clocks.ensure_48_60_ffro()?,
                     FlexcommFrgSel::None => 0,
                 };
-                fcomm.frgclksel().modify(|_r, w| w.sel().variant(self.frg_clk_sel));
+                fcomm
+                    .frgclksel()
+                    .modify(|_r, w| w.sel().variant(self.frg_clk_sel.into_pac()));
 
                 // Flexcomm Interface function clock = (clock selected via FRGCLKSEL) / (1 + MULT / DIV)
                 fcomm.frgctl().modify(|_r, w| unsafe {
@@ -118,14 +293,16 @@ impl SPConfHelper for FlexcommConfig {
             FlexcommFclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
             FlexcommFclkSel::None => 0,
         };
-        fcomm.fcfclksel().modify(|_r, w| w.sel().variant(self.fc_clk_sel));
+        fcomm
+            .fcfclksel()
+            .modify(|_r, w| w.sel().variant(self.fc_clk_sel.into_pac()));
         Ok(freq)
     }
 }
 
 pub struct FlexcommConfig14 {
-    pub frg_clk_sel: Flexcomm14FrgSel,
-    pub fc_clk_sel: Flexcomm14FclkSel,
+    pub frg_clk_sel: FlexcommFrgSel,
+    pub fc_clk_sel: FlexcommFclkSel,
     pub mult: u8,
 }
 impl SPConfHelper for FlexcommConfig14 {
@@ -153,15 +330,17 @@ impl SPConfHelper for FlexcommConfig14 {
     fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
         let clkctl1 = unsafe { pac::Clkctl1::steal() };
         let freq = match self.fc_clk_sel {
-            Flexcomm14FclkSel::FcnFrgClk => {
+            FlexcommFclkSel::FcnFrgClk => {
                 let freq = match self.frg_clk_sel {
-                    Flexcomm14FrgSel::MainClk => clocks.main_clk,
-                    Flexcomm14FrgSel::FrgPllClk => clocks.ensure_frg_pll()?,
-                    Flexcomm14FrgSel::SfroClk => clocks.ensure_16m_sfro()?,
-                    Flexcomm14FrgSel::FfroClk => clocks.ensure_48_60_ffro()?,
-                    Flexcomm14FrgSel::None => 0,
+                    FlexcommFrgSel::MainClk => clocks.main_clk,
+                    FlexcommFrgSel::FrgPllClk => clocks.ensure_frg_pll()?,
+                    FlexcommFrgSel::SfroClk => clocks.ensure_16m_sfro()?,
+                    FlexcommFrgSel::FfroClk => clocks.ensure_48_60_ffro()?,
+                    FlexcommFrgSel::None => 0,
                 };
-                clkctl1.frg14clksel().modify(|_r, w| w.sel().variant(self.frg_clk_sel));
+                clkctl1
+                    .frg14clksel()
+                    .modify(|_r, w| w.sel().variant(self.frg_clk_sel.into_pac14()));
 
                 // Flexcomm Interface function clock = (clock selected via FRGCLKSEL) / (1 + MULT / DIV)
                 clkctl1.frg14ctl().modify(|_r, w| unsafe {
@@ -190,19 +369,21 @@ impl SPConfHelper for FlexcommConfig14 {
                 let freq = freq / fdiv;
                 freq as u32
             }
-            Flexcomm14FclkSel::SfroClk => clocks.ensure_16m_sfro()?,
-            Flexcomm14FclkSel::FfroClk => clocks.ensure_48_60_ffro()?,
-            Flexcomm14FclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
-            Flexcomm14FclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
-            Flexcomm14FclkSel::None => 0,
+            FlexcommFclkSel::SfroClk => clocks.ensure_16m_sfro()?,
+            FlexcommFclkSel::FfroClk => clocks.ensure_48_60_ffro()?,
+            FlexcommFclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
+            FlexcommFclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
+            FlexcommFclkSel::None => 0,
         };
-        clkctl1.fc14fclksel().modify(|_r, w| w.sel().variant(self.fc_clk_sel));
+        clkctl1
+            .fc14fclksel()
+            .modify(|_r, w| w.sel().variant(self.fc_clk_sel.into_pac14()));
         Ok(freq)
     }
 }
 pub struct FlexcommConfig15 {
-    pub frg_clk_sel: Flexcomm15FrgSel,
-    pub fc_clk_sel: Flexcomm15FclkSel,
+    pub frg_clk_sel: FlexcommFrgSel,
+    pub fc_clk_sel: FlexcommFclkSel,
     pub mult: u8,
 }
 impl SPConfHelper for FlexcommConfig15 {
@@ -230,15 +411,17 @@ impl SPConfHelper for FlexcommConfig15 {
     fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
         let clkctl1 = unsafe { pac::Clkctl1::steal() };
         let freq = match self.fc_clk_sel {
-            Flexcomm15FclkSel::FcnFrgClk => {
+            FlexcommFclkSel::FcnFrgClk => {
                 let freq = match self.frg_clk_sel {
-                    Flexcomm15FrgSel::MainClk => clocks.main_clk,
-                    Flexcomm15FrgSel::FrgPllClk => clocks.ensure_frg_pll()?,
-                    Flexcomm15FrgSel::SfroClk => clocks.ensure_16m_sfro()?,
-                    Flexcomm15FrgSel::FfroClk => clocks.ensure_48_60_ffro()?,
-                    Flexcomm15FrgSel::None => 0,
+                    FlexcommFrgSel::MainClk => clocks.main_clk,
+                    FlexcommFrgSel::FrgPllClk => clocks.ensure_frg_pll()?,
+                    FlexcommFrgSel::SfroClk => clocks.ensure_16m_sfro()?,
+                    FlexcommFrgSel::FfroClk => clocks.ensure_48_60_ffro()?,
+                    FlexcommFrgSel::None => 0,
                 };
-                clkctl1.frg15clksel().modify(|_r, w| w.sel().variant(self.frg_clk_sel));
+                clkctl1
+                    .frg15clksel()
+                    .modify(|_r, w| w.sel().variant(self.frg_clk_sel.into_pac15()));
 
                 // Flexcomm Interface function clock = (clock selected via FRGCLKSEL) / (1 + MULT / DIV)
                 clkctl1.frg15ctl().modify(|_r, w| unsafe {
@@ -267,13 +450,15 @@ impl SPConfHelper for FlexcommConfig15 {
                 let freq = freq / fdiv;
                 freq as u32
             }
-            Flexcomm15FclkSel::SfroClk => clocks.ensure_16m_sfro()?,
-            Flexcomm15FclkSel::FfroClk => clocks.ensure_48_60_ffro()?,
-            Flexcomm15FclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
-            Flexcomm15FclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
-            Flexcomm15FclkSel::None => 0,
+            FlexcommFclkSel::SfroClk => clocks.ensure_16m_sfro()?,
+            FlexcommFclkSel::FfroClk => clocks.ensure_48_60_ffro()?,
+            FlexcommFclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
+            FlexcommFclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
+            FlexcommFclkSel::None => 0,
         };
-        clkctl1.fc15fclksel().modify(|_r, w| w.sel().variant(self.fc_clk_sel));
+        clkctl1
+            .fc15fclksel()
+            .modify(|_r, w| w.sel().variant(self.fc_clk_sel.into_pac15()));
         Ok(freq)
     }
 }
@@ -310,7 +495,9 @@ impl SPConfHelper for AdcConfig {
                     AdcSel0::FfroClk => clocks.ensure_48_60_ffro()?,
                     AdcSel0::None => 0,
                 };
-                clkctl0.adc0fclksel0().modify(|_r, w| w.sel().variant(self.sel0));
+                clkctl0
+                    .adc0fclksel0()
+                    .modify(|_r, w| w.sel().variant(self.sel0.into_pac()));
                 freq
             }
             AdcSel1::Syspll0MainClk => clocks.main_clk,
@@ -322,7 +509,9 @@ impl SPConfHelper for AdcConfig {
         if !matches!(self.sel1, AdcSel1::Adc0fclksel0MuxOut) {
             clkctl0.adc0fclksel0().modify(|_r, w| w.sel().none());
         }
-        clkctl0.adc0fclksel1().modify(|_r, w| w.sel().variant(self.sel1));
+        clkctl0
+            .adc0fclksel1()
+            .modify(|_r, w| w.sel().variant(self.sel1.into_pac()));
 
         clkctl0
             .adc0fclkdiv()
@@ -348,13 +537,13 @@ pub enum SCTClockSource {
     MainPLL,
 
     /// `aux0_pll_clk`
-    AUX0PLL,
+    Aux0Pll,
 
     /// `48/60m_irc`
-    FFRO,
+    Ffro48_60Mhz,
 
     /// `aux1_pll_clk`
-    AUX1PLL,
+    Aux1Pll,
 
     /// `audio_pll_clk`
     AudioPLL,
@@ -403,19 +592,19 @@ impl SPConfHelper for Sct0Config {
                 clkctl0.sctfclksel().write(|w| w.sel().main_sys_pll_clk());
                 freq
             }
-            SCTClockSource::AUX0PLL => {
+            SCTClockSource::Aux0Pll => {
                 // aux0_pll_clk may not be enabled
                 let freq = clocks.aux0_pll_clk.ok_or(ClockError::bad_config("aux0pll needed"))?;
                 clkctl0.sctfclksel().write(|w| w.sel().syspll0_aux0_pll_clock());
                 freq
             }
-            SCTClockSource::FFRO => {
+            SCTClockSource::Ffro48_60Mhz => {
                 // FFRO/48_60mhz may not be enabled
                 let freq = clocks.ensure_48_60_ffro()?;
                 clkctl0.sctfclksel().write(|w| w.sel().ffro_clk());
                 freq
             }
-            SCTClockSource::AUX1PLL => {
+            SCTClockSource::Aux1Pll => {
                 // aux1_pll_clk may not be enabled
                 let freq = clocks.aux1_pll_clk.ok_or(ClockError::bad_config("aux1pll needed"))?;
                 clkctl0.sctfclksel().write(|w| w.sel().syspll0_aux1_pll_clock());
@@ -541,7 +730,7 @@ impl SPConfHelper for CtimerConfig {
         };
         clkctl1
             .ct32bitfclksel(self.instance as usize)
-            .modify(|_r, w| w.sel().variant(self.source));
+            .modify(|_r, w| w.sel().variant(self.source.into_pac()));
         Ok(freq)
     }
 }
