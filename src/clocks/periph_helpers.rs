@@ -1,7 +1,34 @@
+//! Peripheral Clock Helpers
+//!
+//! This module contains the configuration types and the methods used for applying
+//! their configuration via the [`SPConfHelper`] trait
+
 #![allow(dead_code)]
 
 use super::{ClockError, Clocks};
 use crate::pac;
+
+pub trait SPConfHelper {
+    /// This method is called AFTER `T::enable_perph_clock()`, and BEFORE
+    /// `T::reset_perph()`.
+    fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError>;
+}
+
+/// Placeholder Config for peripherals that are not implemented yet, but definitely
+/// require some kind of "pre-flight check" to ensure upstream clocks are enabled and
+/// select/divs are made.
+pub(super) mod sealed {
+    use crate::clocks::{ClockError, Clocks};
+
+    use super::SPConfHelper;
+
+    pub struct UnimplementedConfig;
+    impl SPConfHelper for UnimplementedConfig {
+        fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
+            Err(ClockError::prog_err("peripheral not implemented"))
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub enum FlexcommFrgSel {
@@ -180,28 +207,6 @@ impl AdcSel1 {
             AdcSel1::Syspll0Aux0PllClock => pac::clkctl0::adc0fclksel1::Sel::Syspll0Aux0PllClock,
             AdcSel1::Syspll0Aux1PllClock => pac::clkctl0::adc0fclksel1::Sel::Syspll0Aux1PllClock,
             AdcSel1::None => pac::clkctl0::adc0fclksel1::Sel::None,
-        }
-    }
-}
-
-pub trait SPConfHelper {
-    /// This method is called AFTER `T::enable_perph_clock()`, and BEFORE
-    /// `T::reset_perph()`.
-    fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError>;
-}
-
-/// Placeholder Config for peripherals that are not implemented yet, but definitely
-/// require some kind of "pre-flight check" to ensure upstream clocks are enabled and
-/// select/divs are made.
-pub(super) mod sealed {
-    use crate::clocks::{ClockError, Clocks};
-
-    use super::SPConfHelper;
-
-    pub struct UnimplementedConfig;
-    impl SPConfHelper for UnimplementedConfig {
-        fn post_enable_config(&self, _clocks: &Clocks) -> Result<u32, ClockError> {
-            Err(ClockError::prog_err("peripheral not implemented"))
         }
     }
 }

@@ -21,6 +21,97 @@ pub(crate) mod periph_helpers;
 const WORST_CASE_TICKS_PER_US: u32 = 300;
 static CLOCKS: Mutex<RefCell<Option<Clocks>>> = Mutex::new(RefCell::new(None));
 
+/// `init` is the main entrypoint for configuring clocks.
+///
+/// This should be called once on startup.
+///
+/// Once this function has completed successfully, all of the "root" clocks of the
+/// system have been configured as specified in [`ClockConfig`], and are not currently
+/// reconfigurable.
+///
+/// This state is stored in a write-once static in this module, and can be later
+/// accessed in one of two ways:
+///
+/// 1. Via the [`with_clocks`] method, which gives read-only access to [`Clocks`]
+/// 2. Individual peripheral source clocks are returned by calls to [`enable_and_reset`]
+pub(crate) fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
+    // TODO: When enabling clocks, wait the appropriate time
+    //
+    // Ensure we haven't already configured the clocks
+    critical_section::with(|cs| {
+        if CLOCKS.borrow_ref(cs).is_some() {
+            Err(ClockError::AlreadyConfigured)
+        } else {
+            Ok(())
+        }
+    })?;
+    let mut clocks = Clocks::default();
+
+    let mut operator = ClockOperator {
+        config: &config,
+        clocks: &mut clocks,
+        clkctl0: unsafe { pac::Clkctl0::steal() },
+        sysctl0: unsafe { pac::Sysctl0::steal() },
+        clkctl1: unsafe { pac::Clkctl1::steal() },
+        // sysctl1: pac::Sysctl1::steal(),
+    };
+
+    // If necessary, set up the clock-in
+    operator.setup_clock_in(clk_in_select);
+
+    // Set up the main pll, if requested
+    let pll_output_freq = operator.setup_main_pll(config.main_pll)?;
+    // Set up downstream plls, if requested
+    if let Some((freq, main_pll)) = pll_output_freq {
+        operator.setup_pll_pfd0(&main_pll, freq)?;
+        operator.setup_pll_pfd1(&main_pll, freq)?;
+        operator.setup_pll_pfd2(&main_pll, freq)?;
+        operator.setup_pll_pfd3(&main_pll, freq)?;
+    } else {
+        // If the PLL output is not enabled, then we can't feed PFD0-3, so just
+        // gate them to save power.
+        operator.disable_pll_pfd0();
+        operator.disable_pll_pfd1();
+        operator.disable_pll_pfd2();
+        operator.disable_pll_pfd3();
+    }
+
+    // Setup main clock
+    operator.setup_main_clock()?;
+    // Setup system clock
+    operator.setup_system_clock()?;
+    // Setup frg_pll_div
+    operator.setup_frg_pll_div()?;
+
+    // Ensure some core clocks are enabled, as we can't predict now what
+    // other peripherals will want later. Ignore errors if not indicated
+    // by the config.
+    //
+    // If the clocks have already been enabled, this is a nop.
+    // If the clocks haven't been enabled, but aren't set in config:
+    //  we'll ignore the err.
+    // If the clocks haven't been enabled, but are set in the config:
+    //  we'll enable them now, as long as their inputs are active.
+    _ = operator.ensure_1mhz_lposc_active();
+    _ = operator.ensure_48_60mhz_irc_active();
+    _ = operator.ensure_16mhz_irc_active();
+    _ = operator.ensure_main_pll_clk_active();
+    _ = operator.ensure_32kclk_active();
+
+    // Optionally enable the 32k_wake_clk
+    operator.setup_32k_wake_clk()?;
+
+    // Finally, setup clk_out
+    operator.setup_clock_out()?;
+
+    // Store the configured clocks object statically so we can retrieve it to
+    // check coherency later
+    critical_section::with(|cs| {
+        *CLOCKS.borrow_ref_mut(cs) = Some(clocks);
+    });
+    Ok(())
+}
+
 /// STATE AFTER INIT: EXPLAIN
 #[derive(Debug, Clone, Default)]
 pub struct Clocks {
@@ -941,85 +1032,6 @@ pub fn with_clocks<F: FnOnce(&Clocks) -> R, R>(f: F) -> Option<R> {
         let c = c.as_ref()?;
         Some(f(c))
     })
-}
-
-/// Note: must be called exactly once at bootup
-pub(crate) fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
-    // TODO: When enabling clocks, wait the appropriate time
-    //
-    // Ensure we haven't already configured the clocks
-    critical_section::with(|cs| {
-        if CLOCKS.borrow_ref(cs).is_some() {
-            Err(ClockError::AlreadyConfigured)
-        } else {
-            Ok(())
-        }
-    })?;
-    let mut clocks = Clocks::default();
-
-    let mut operator = ClockOperator {
-        config: &config,
-        clocks: &mut clocks,
-        clkctl0: unsafe { pac::Clkctl0::steal() },
-        sysctl0: unsafe { pac::Sysctl0::steal() },
-        clkctl1: unsafe { pac::Clkctl1::steal() },
-        // sysctl1: pac::Sysctl1::steal(),
-    };
-
-    // If necessary, set up the clock-in
-    operator.setup_clock_in(clk_in_select);
-
-    // Set up the main pll, if requested
-    let pll_output_freq = operator.setup_main_pll(config.main_pll)?;
-    // Set up downstream plls, if requested
-    if let Some((freq, main_pll)) = pll_output_freq {
-        operator.setup_pll_pfd0(&main_pll, freq)?;
-        operator.setup_pll_pfd1(&main_pll, freq)?;
-        operator.setup_pll_pfd2(&main_pll, freq)?;
-        operator.setup_pll_pfd3(&main_pll, freq)?;
-    } else {
-        // If the PLL output is not enabled, then we can't feed PFD0-3, so just
-        // gate them to save power.
-        operator.disable_pll_pfd0();
-        operator.disable_pll_pfd1();
-        operator.disable_pll_pfd2();
-        operator.disable_pll_pfd3();
-    }
-
-    // Setup main clock
-    operator.setup_main_clock()?;
-    // Setup system clock
-    operator.setup_system_clock()?;
-    // Setup frg_pll_div
-    operator.setup_frg_pll_div()?;
-
-    // Ensure some core clocks are enabled, as we can't predict now what
-    // other peripherals will want later. Ignore errors if not indicated
-    // by the config.
-    //
-    // If the clocks have already been enabled, this is a nop.
-    // If the clocks haven't been enabled, but aren't set in config:
-    //  we'll ignore the err.
-    // If the clocks haven't been enabled, but are set in the config:
-    //  we'll enable them now, as long as their inputs are active.
-    _ = operator.ensure_1mhz_lposc_active();
-    _ = operator.ensure_48_60mhz_irc_active();
-    _ = operator.ensure_16mhz_irc_active();
-    _ = operator.ensure_main_pll_clk_active();
-    _ = operator.ensure_32kclk_active();
-
-    // Optionally enable the 32k_wake_clk
-    operator.setup_32k_wake_clk()?;
-
-    // Finally, setup clk_out
-    operator.setup_clock_out()?;
-
-    // Store the configured clocks object statically so we can retrieve it to
-    // check coherency later
-    critical_section::with(|cs| {
-        *CLOCKS.borrow_ref_mut(cs) = Some(clocks);
-    });
-    Ok(())
 }
 
 ///Trait to expose perph clocks
