@@ -4,9 +4,12 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use paste::paste;
 
+use crate::clocks::periph_helpers::{FlexcommConfig, FlexcommConfig14, FlexcommConfig15, FlexcommInstance};
 use crate::clocks::{
-    disable, enable_and_reset, Flexcomm14FclkSel, Flexcomm14FrgSel, Flexcomm15FclkSel, Flexcomm15FrgSel,
-    FlexcommConfig, FlexcommConfig14, FlexcommConfig15, FlexcommFclkSel, FlexcommFrgSel, FlexcommInstance,
+    disable, enable_and_reset,
+    periph_helpers::{
+        Flexcomm14FclkSel, Flexcomm14FrgSel, Flexcomm15FclkSel, Flexcomm15FrgSel, FlexcommFclkSel, FlexcommFrgSel,
+    },
     SysconPeripheral,
 };
 use crate::peripherals::{

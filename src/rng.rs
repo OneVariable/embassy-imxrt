@@ -8,7 +8,8 @@ use embassy_futures::block_on;
 use embassy_sync::waitqueue::AtomicWaker;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::clocks::{enable_and_reset, SysconPeripheral, NoConfig};
+use crate::clocks::periph_helpers::NoConfig;
+use crate::clocks::{enable_and_reset, SysconPeripheral};
 use crate::interrupt::typelevel::Interrupt;
 use crate::{interrupt, peripherals, Peri, PeripheralType};
 
@@ -113,8 +114,7 @@ impl<'d> Rng<'d> {
         _inner: Peri<'d, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self
-    where
-    {
+where {
         // "NoConfig" peripherals can't fail, we can ignore the result.
         _ = enable_and_reset::<T>(&NoConfig);
 

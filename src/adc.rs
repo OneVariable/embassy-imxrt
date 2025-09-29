@@ -10,7 +10,11 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_hal_internal::{impl_peripheral, Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::clocks::{enable_and_reset, AdcConfig, AdcSel0, AdcSel1};
+use crate::clocks::periph_helpers::AdcConfig;
+use crate::clocks::{
+    enable_and_reset,
+    periph_helpers::{AdcSel0, AdcSel1},
+};
 use crate::interrupt::typelevel::Binding;
 use crate::iopctl::{DriveMode, DriveStrength, Function, Inverter, IopctlPin, Pull, SlewRate};
 use crate::pac::adc0;

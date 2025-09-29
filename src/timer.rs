@@ -8,9 +8,8 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
 
-use crate::clocks::{
-    enable_and_reset, CTimerInstance, CTimerSel, ClockError, CtimerConfig, NoConfig, SysconPeripheral,
-};
+use crate::clocks::periph_helpers::{CTimerInstance, CtimerConfig, NoConfig};
+use crate::clocks::{enable_and_reset, periph_helpers::CTimerSel, ClockError, SysconPeripheral};
 use crate::iopctl::{DriveMode, DriveStrength, Inverter, IopctlPin as Pin, Pull, SlewRate};
 use crate::pwm::{CentiPercent, Hertz, MicroSeconds};
 use crate::{interrupt, peripherals, Peri, PeripheralType};

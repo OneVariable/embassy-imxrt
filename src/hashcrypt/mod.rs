@@ -5,7 +5,8 @@ use embassy_hal_internal::PeripheralType;
 use embassy_sync::waitqueue::AtomicWaker;
 use hasher::Hasher;
 
-use crate::clocks::{enable_and_reset, NoConfig};
+use crate::clocks::enable_and_reset;
+use crate::clocks::periph_helpers::NoConfig;
 use crate::peripherals::{DMA0_CH30, HASHCRYPT};
 use crate::{dma, interrupt, pac, Peri};
 

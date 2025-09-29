@@ -10,7 +10,8 @@ use embassy_hal_internal::impl_peripheral;
 use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::clocks::{enable_and_reset, NoConfig};
+use crate::clocks::enable_and_reset;
+use crate::clocks::periph_helpers::NoConfig;
 use crate::dma::channel::Channel;
 use crate::peripherals::{self, DMA0};
 use crate::{interrupt, Peri, PeripheralType};

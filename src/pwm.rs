@@ -29,7 +29,9 @@
 // The timer is reset by the match register that is configured to set the PWM cycle length.
 // When the timer is reset to zero, all currently HIGH match outputs configured as PWM outputs are cleared
 
-use crate::clocks::{disable, SCTClockSource, Sct0Config};
+use crate::clocks::disable;
+use crate::clocks::periph_helpers::SCTClockSource;
+use crate::clocks::periph_helpers::Sct0Config;
 /// include pac definitions for instancing
 use crate::pac;
 /// include the traits that are implemented + exposed via this implementation
@@ -110,7 +112,8 @@ impl Channel {
 
 // non-reexported (sealed) traits
 mod sealed {
-    use crate::clocks::{Sct0Config, SealedSysconPeripheral, SysconPeripheral};
+    use crate::clocks::periph_helpers::Sct0Config;
+    use crate::clocks::{SealedSysconPeripheral, SysconPeripheral};
     use crate::PeripheralType;
 
     #[allow(private_bounds)]
@@ -119,7 +122,7 @@ mod sealed {
         Self: PeripheralType + SysconPeripheral,
         Self: 'static + Send,
         Self: SealedSysconPeripheral<SysconPeriphConfig = Sct0Config>,
-     {
+    {
         fn configure(base_period: u32);
     }
 }

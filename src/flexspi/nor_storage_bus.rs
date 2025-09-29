@@ -13,7 +13,7 @@ use storage_bus::nor::{
 };
 
 use crate::clocks::enable_and_reset;
-use crate::clocks::NoConfig;
+use crate::clocks::periph_helpers::NoConfig;
 use crate::iopctl::IopctlPin as Pin;
 use crate::pac::flexspi::ahbcr::*;
 use crate::pac::flexspi::flshcr1::*;

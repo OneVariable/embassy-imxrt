@@ -10,7 +10,8 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 use sealed::Sealed;
 
-use crate::clocks::{enable_and_reset, NoConfig};
+use crate::clocks::enable_and_reset;
+use crate::clocks::periph_helpers::NoConfig;
 use crate::iopctl::IopctlPin;
 pub use crate::iopctl::{AnyPin, DriveMode, DriveStrength, Function, Inverter, Pull, SlewRate};
 use crate::{interrupt, peripherals, Peri, PeripheralType};

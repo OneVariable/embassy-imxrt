@@ -130,7 +130,7 @@ macro_rules! bind_interrupts {
 
 /// HAL configuration for iMX RT600.
 pub mod config {
-    use crate::clocks::ClockConfig;
+    use crate::clocks::config::ClockConfig;
 
     /// HAL configuration passed when initializing.
     #[non_exhaustive]
@@ -176,7 +176,7 @@ pub fn init(config: config::Config) -> Peripherals {
     let peripherals = Peripherals::take();
 
     unsafe {
-        if let Err(e) = clocks::init(config.clocks, clocks::ClkInSelect::default()) {
+        if let Err(e) = clocks::init(config.clocks, clocks::config::ClkInSelect::default()) {
             error!("unable to initialize Clocks for reason: {:?}", e);
             // Panic here?
         }
