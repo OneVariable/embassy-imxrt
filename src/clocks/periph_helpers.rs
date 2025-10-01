@@ -474,21 +474,23 @@ pub struct AdcConfig {
     pub div: u8,
 }
 impl SPConfHelper for AdcConfig {
-    //    16m_irc ┌─────┐                      ┌─────┐
-    // ──────────▶│000  │    ┌────────────────▶│000  │
-    //     clk_in │     │    │     main_pll_clk│     │
-    // ──────────▶│001  │    │      ──────────▶│001  │        ┌─────────┐
-    //   1m_lposc │     │    │     aux0_pll_clk│     │        │ADC Clock│ to ADC
-    // ──────────▶│010  │────┘      ──────────▶│010  │───────▶│Divider  │───────▶
-    // 48/60m_irc │     │          aux1_pll_clk│     │        └─────────┘  fclk
-    // ──────────▶│011  │           ──────────▶│011  │             ▲
-    //    "none"  │     │              "none"  │     │             │
-    // ──────────▶│111  │           ──────────▶│111  │       ADC0FCLKDIV
-    //            └─────┘                      └─────┘
-    //               ▲                            ▲
-    //               │                            │
-    //      ADC clock select 0           ADC clock select 1
-    //       ADC0FCLKSEL0[2:0]            ADC0FCLKSEL1[2:0]
+    /// ```text
+    ///    16m_irc ┌─────┐                      ┌─────┐
+    /// ──────────▶│000  │    ┌────────────────▶│000  │
+    ///     clk_in │     │    │     main_pll_clk│     │
+    /// ──────────▶│001  │    │      ──────────▶│001  │        ┌─────────┐
+    ///   1m_lposc │     │    │     aux0_pll_clk│     │        │ADC Clock│ to ADC
+    /// ──────────▶│010  │────┘      ──────────▶│010  │───────▶│Divider  │───────▶
+    /// 48/60m_irc │     │          aux1_pll_clk│     │        └─────────┘  fclk
+    /// ──────────▶│011  │           ──────────▶│011  │             ▲
+    ///    "none"  │     │              "none"  │     │             │
+    /// ──────────▶│111  │           ──────────▶│111  │       ADC0FCLKDIV
+    ///            └─────┘                      └─────┘
+    ///               ▲                            ▲
+    ///               │                            │
+    ///      ADC clock select 0           ADC clock select 1
+    ///       ADC0FCLKSEL0[2:0]            ADC0FCLKSEL1[2:0]
+    /// ```
     fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
         let clkctl0 = unsafe { pac::Clkctl0::steal() };
         let mut freq = match self.sel1 {
@@ -749,5 +751,63 @@ impl SPConfHelper for NoConfig {
         // upstream source, it is often AHB/APB clocks, but I'm not sure
         // if this is ALWAYS true.
         Ok(0)
+    }
+}
+
+pub enum OsEventClockSelect {
+    /// 0: Low Power Oscillator Clock (LPOSC).
+    Lposc,
+    /// 1: RTC 32KHz Clock.
+    Rtc32khzClk,
+    /// 2: Teal Free Running Clock (Global Time Stamping)
+    TealFreeRunningClk,
+    /// 7: None, this may be selected in order to reduce power when no output is needed.
+    None,
+}
+pub struct OsEventConfig {
+    pub select: OsEventClockSelect,
+}
+impl SPConfHelper for OsEventConfig {
+    /// ```text
+    ///     1m_lposc ┌─────┐
+    /// ────────────▶│000  │
+    ///      32k_clk │     │
+    /// ────────────▶│001  │ ostimer_clk
+    ///         hclk │     │────────────▶
+    /// ────────────▶│010  │
+    ///       "none" │     │
+    /// ────────────▶│111  │
+    ///              └─────┘
+    ///                 ▲
+    ///                 │
+    ///      OS Timer Clock Select
+    ///       OSEVENTTFCLKSEL[2:0]
+    /// ```
+    fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
+        let clkctl1 = unsafe { pac::Clkctl1::steal() };
+        let (freq, variant) = match self.select {
+            OsEventClockSelect::Lposc => {
+                let freq = clocks.ensure_1m_lposc()?;
+                let var = pac::clkctl1::oseventfclksel::Sel::Lposc;
+                (freq, var)
+            }
+            OsEventClockSelect::Rtc32khzClk => {
+                let freq = clocks.ensure_32k_clk()?;
+                let var = pac::clkctl1::oseventfclksel::Sel::Rtc32khzClk;
+                (freq, var)
+            }
+            OsEventClockSelect::TealFreeRunningClk => {
+                let freq = clocks.ensure_hclk()?;
+                let var = pac::clkctl1::oseventfclksel::Sel::TealFreeRunningClk;
+                (freq, var)
+            }
+            OsEventClockSelect::None => {
+                let freq = 0;
+                let var = pac::clkctl1::oseventfclksel::Sel::None;
+                (freq, var)
+            }
+        };
+        clkctl1.oseventfclksel().modify(|_r, w| w.sel().variant(variant));
+        Ok(freq)
     }
 }

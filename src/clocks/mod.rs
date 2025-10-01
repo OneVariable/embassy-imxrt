@@ -7,8 +7,8 @@ use config::{
 use critical_section::Mutex;
 use paste::paste;
 use periph_helpers::{
-    AdcConfig, CtimerConfig, FlexcommConfig, FlexcommConfig14, FlexcommConfig15, NoConfig, SPConfHelper, Sct0Config,
-    WdtConfig,
+    AdcConfig, CtimerConfig, FlexcommConfig, FlexcommConfig14, FlexcommConfig15, NoConfig, OsEventConfig, SPConfHelper,
+    Sct0Config, WdtConfig,
 };
 
 use crate::iopctl::IopctlPin;
@@ -223,6 +223,17 @@ impl Clocks {
         self.clk_in
             .ok_or_else(|| ClockError::bad_config("xtal_in needed but not enabled"))
     }
+
+    fn ensure_32k_clk(&self) -> Result<u32, ClockError> {
+        self._32k_clk
+            .as_option()
+            .ok_or_else(|| ClockError::bad_config("32k_clk needed but not enabled"))
+    }
+
+    fn ensure_hclk(&self) -> Result<u32, ClockError> {
+        self.sys_cpu_ahb_clk
+            .ok_or_else(|| ClockError::bad_config("hclk needed but not enabled"))
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -246,6 +257,7 @@ impl<const F: u32> From<StaticClock<F>> for Option<u32> {
     }
 }
 
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug)]
 pub enum ClockError {
     /// The requested configuration was impossible or conflicting
@@ -1047,18 +1059,28 @@ pub(crate) trait SealedSysconPeripheral {
 #[allow(private_bounds)]
 pub trait SysconPeripheral: SealedSysconPeripheral + 'static {}
 
-/// Enables and resets peripheral `T`.
+/// Enables peripheral `T`.
 ///
 /// # Safety
 ///
 /// Peripheral must not be in use.
-pub(crate) fn enable_and_reset<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Result<u32, ClockError> {
+pub(crate) fn enable<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Result<u32, ClockError> {
     T::enable_perph_clock();
     let freq = critical_section::with(|cs| {
         let clocks = CLOCKS.borrow_ref(cs);
         let clocks = clocks.as_ref().ok_or(ClockError::prog_err("didn't call init"))?;
         cfg.post_enable_config(clocks)
     })?;
+    Ok(freq)
+}
+
+/// Enables and resets peripheral `T`.
+///
+/// # Safety
+///
+/// Peripheral must not be in use.
+pub(crate) fn enable_and_reset<T: SysconPeripheral>(cfg: &T::SysconPeriphConfig) -> Result<u32, ClockError> {
+    let freq = enable::<T>(cfg)?;
     T::reset_perph();
     Ok(freq)
 }
@@ -1222,7 +1244,7 @@ impl_perph_clk!(I3C0, Clkctl1, pscctl2, Rstctl1, prstctl2, 16, UnimplementedConf
 impl_perph_clk!(MRT0, Clkctl1, pscctl2, Rstctl1, prstctl2, 8, NoConfig);
 impl_perph_clk!(MU_A, Clkctl1, pscctl1, Rstctl1, prstctl1, 28, NoConfig);
 // TODO: OS Event Timer has clock selection requirements
-impl_perph_clk!(OS_EVENT, Clkctl1, pscctl0, Rstctl1, prstctl0, 27, UnimplementedConfig);
+impl_perph_clk!(OS_EVENT, Clkctl1, pscctl0, Rstctl1, prstctl0, 27, OsEventConfig);
 // TODO: As far as I can tell POWERQUAD doesn't require any additional clocking/setup?
 // I'm not super confident about that, but we don't support it yet anyway
 impl_perph_clk!(POWERQUAD, Clkctl0, pscctl0, Rstctl0, prstctl0, 8, NoConfig);
@@ -1402,22 +1424,6 @@ impl_perph_clk!(WDT1, Clkctl1, pscctl2, Rstctl1, prstctl2, 10, WdtConfig);
 //                                                       ▲
 //                                                       │
 //                                                  I3C0FCLKSDIV
-//
-// -----
-//
-//     1m_lposc ┌─────┐
-// ────────────▶│000  │
-//      32k_clk │     │
-// ────────────▶│001  │ ostimer_clk
-//         hclk │     │────────────▶
-// ────────────▶│010  │
-//       "none" │     │
-// ────────────▶│111  │
-//              └─────┘
-//                 ▲
-//                 │
-//      OS Timer Clock Select
-//       OSEVENTTFCLKSEL[2:0]
 //
 // -----
 //
