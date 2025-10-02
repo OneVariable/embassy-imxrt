@@ -497,7 +497,7 @@ impl SPConfHelper for AdcConfig {
             AdcSel1::Adc0fclksel0MuxOut => {
                 let freq = match self.sel0 {
                     AdcSel0::SfroClk => clocks.ensure_16m_sfro()?,
-                    AdcSel0::XtalinClk => clocks.ensure_xtal_in()?,
+                    AdcSel0::XtalinClk => clocks.ensure_clk_in()?,
                     AdcSel0::Lposc => clocks.ensure_1m_lposc()?,
                     AdcSel0::FfroClk => clocks.ensure_48_60_ffro()?,
                     AdcSel0::None => 0,

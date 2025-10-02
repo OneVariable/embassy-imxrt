@@ -1,28 +1,117 @@
 use crate::peripherals::{PIO0_25, PIO2_15, PIO2_30};
 
+/// This type represents a divider in the range 1..=256.
+///
+/// At a hardware level, this is an 8-bit register from 0..=255,
+/// which adds one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Div8(pub(super) u8);
+
+impl Div8 {
+    /// Store a "raw" divisor value that will divide the source by
+    /// `(n + 1)`, e.g. `Div8::from_raw(0)` will divide the source
+    /// by 1, and `Div8::from_raw(255)` will divide the source by
+    /// 256.
+    pub const fn from_raw(n: u8) -> Self {
+        Self(n)
+    }
+
+    /// Store a specific divisor value that will divide the source
+    /// by `n`. e.g. `Div8::from_divisor(1)` will divide the source
+    /// by 1, and `Div8::from_divisor(256)` will divide the source
+    /// by 256.
+    ///
+    /// Will return `None` if `n` is not in the range `1..=256`.
+    /// Consider [`Self::from_raw`] for an infallible version.
+    pub const fn from_divisor(n: u16) -> Option<Self> {
+        let Some(n) = n.checked_sub(1) else {
+            return None;
+        };
+        if n > (u8::MAX as u16) {
+            return None;
+        }
+        Some(Self(n as u8))
+    }
+
+    /// Convert into "raw" bits form
+    #[inline(always)]
+    pub const fn into_bits(self) -> u8 {
+        self.0
+    }
+
+    /// Convert into "divisor" form, as a u32 for convenient frequency math
+    #[inline(always)]
+    pub const fn into_divisor(self) -> u32 {
+        self.0 as u32 + 1
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ClockConfig {
     /// Clock coming from RTC crystal oscillator
     pub enable_32k_clk: bool,
     pub enable_16m_irc: bool,
     pub enable_1m_lposc: bool,
-    pub _48_60m_irc_select: _48_60mIrcSelect,
-    pub _32k_wake_clk_select: _32kWakeClkSelect,
+    pub m4860_irc_select: M4860IrcSelect,
+    pub k32_wake_clk_select: K32WakeClkSelect,
     pub main_pll: Option<MainPll>,
     pub main_clock_select: MainClockSelect,
     /// Main clock divided by (1 + sys_cpu_ahb_div)
-    pub sys_cpu_ahb_div: u8,
+    pub sys_cpu_ahb_div: Div8,
     /// Division of FRGPLLCLKDIV, main_pll_clk divided by (1 + frg_clk_pll_div)
-    /// TODO: Switch to `u16` with check? At least: MAKE IT CONSISTENT.
-    /// TODO: Check what stm32 HALs do for this kind of thing?
-    pub frg_clk_pll_div: Option<u8>,
+    pub frg_clk_pll_div: Option<Div8>,
     pub clk_out_select: ClockOutSource,
-    pub clk_out_div: Option<u8>,
+    pub clk_out_div: Option<Div8>,
 }
 
 impl Default for ClockConfig {
     fn default() -> Self {
-        todo!()
+        // For the default strategy, we should probably assume as little
+        // as possible about the outside world (e.g. what clocks are
+        // connected externally), and enable the maximum number of source
+        // clocks.
+        ClockConfig {
+            // Don't assume we have an external 32k clock
+            enable_32k_clk: false,
+            // Enable 16m osc
+            enable_16m_irc: true,
+            // Enable 1m osc
+            enable_1m_lposc: true,
+            // Select high speed option
+            m4860_irc_select: M4860IrcSelect::Mhz60,
+            // Use the internal osc as the wake clk source
+            k32_wake_clk_select: K32WakeClkSelect::K32Lp,
+            main_pll: Some(MainPll {
+                // Select 48/60 div2, e.g. 30MHz
+                clock_select: MainPllClockSelect::M4860IrcDiv2,
+                // 30 x 20: 600MHz
+                multiplier: 20,
+                // 600 / (18 / 18) = 600MHz
+                pfd0_div: Some(18),
+                // 600 / (18 / 18) = 600MHz
+                pfd1_div: Some(18),
+                // 600 / (18 / 18) = 600MHz
+                pfd2_div: Some(18),
+                // 600 / (18 / 18) = 600MHz
+                pfd3_div: Some(18),
+                // 600 / 2 = 300MHz
+                main_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
+                // 600 / 2 = 300MHz
+                dsp_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
+                // 600 / 2 = 300MHz
+                aux0_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
+                // 600 / 2 = 300MHz
+                aux1_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
+            }),
+            // Select Main PLL Clock, which is at 300MHz
+            main_clock_select: MainClockSelect::MainPllClk,
+            // HCLK: (300 / (0 + 1)) = 300MHz
+            sys_cpu_ahb_div: const { Div8::from_divisor(1).unwrap() },
+            // FRG CLK: (300 / (9 + 1)) = 30MHz
+            frg_clk_pll_div: const { Some(Div8::from_divisor(10).unwrap()) },
+            clk_out_select: ClockOutSource::None,
+            clk_out_div: None,
+        }
     }
 }
 
@@ -51,19 +140,36 @@ impl Default for ClockConfig {
 /// ```
 #[derive(Copy, Clone, Default, Debug)]
 pub enum ClockOutSource {
-    /// TODO: Doc comments
+    /// Sourced from `16m_irc`, internal 16MHz Oscillator "SFRO"
     M16Irc,
+    /// Sourced from `clk_in`, external crystal or oscillator
     ClkIn,
+    /// Sourced from `1m_lposc`, internal 1MHz Low Power Oscillator
     M1Lposc,
+    /// Sourced from `48/60m_irc`, internal 48/60MHz Oscillator "FFRO"
     M4860Irc,
+    /// Sourced from `main_clk`, input to the (pre-divided) AHB/HCLK stage
     MainClk,
+    /// Sourced from `dsp_main_clk`, input to the (pre-divided) DSP stage
     DspMainClk,
+    /// Sourced from `main_pll_clk`, driven by the main system PLL output stage
+    /// PFD0 and fed through the Main PLL Clock Divider
     MainPllClk,
+    /// Sourced from `aux0_pll_clk`, driven by the main system PLL output stage
+    /// PFD2 and fed through the AUX0 PLL Clock Divider
     Aux0PllClk,
+    /// Sourced from `dsp_pll_clk`, driven by the main system PLL output stage
+    /// PFD1 and fed through the DSP PLL Clock Divider
     DspPllClk,
+    /// Sourced from `aux1_pll_clk`, driven by the main system PLL output stage
+    /// PFD3 and fed through the AUX1 PLL Clock Divider
     Aux1PllClk,
+    /// Sourced from `audio_pll_clk`, driven by the Audio PLL output stage
+    /// PDF0 and fed through the Audio PLL Divider
     AudioPllClk,
+    /// Sourced from `32k_clk`, the external RTC crystal oscillator
     K32Clk,
+    /// Not fed
     #[default]
     None,
 }
@@ -135,19 +241,19 @@ pub struct MainPll {
     /// Clock divider for the `main_pll_clk`.
     ///
     /// Allowed range: `1..=256`.
-    pub main_pll_clock_divider: u16,
+    pub main_pll_clock_divider: Div8,
     /// Clock divider for the `dsp_pll_clk`.
     ///
     /// Allowed range: `1..=256`.
-    pub dsp_pll_clock_divider: u16,
+    pub dsp_pll_clock_divider: Div8,
     /// Clock divider for the `aux0_pll_clk`.
     ///
     /// Allowed range: `1..=256`.
-    pub aux0_pll_clock_divider: u16,
+    pub aux0_pll_clock_divider: Div8,
     /// Clock divider for the `aux1_pll_clk`.
     ///
     /// Allowed range: `1..=256`.
-    pub aux1_pll_clock_divider: u16,
+    pub aux1_pll_clock_divider: Div8,
 }
 
 /// ```text
@@ -164,9 +270,9 @@ pub struct MainPll {
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MainPllClockSelect {
-    _16mIrc = 0b000,
+    M16Irc = 0b000,
     ClkIn = 0b001,
-    _48_60MIrcDiv2 = 0b010,
+    M4860IrcDiv2 = 0b010,
 }
 
 /// ```text
@@ -181,18 +287,27 @@ pub enum MainPllClockSelect {
 ///                Enable & bypass
 ///                SYSOSCCTL0[1:0]
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum ClkInSelect {
-    Xtal { freq: u32, bypass: bool, low_power: bool },
-    ClkIn0_25 { freq: u32, pin: PIO0_25 },
-    ClkIn2_15 { freq: u32, pin: PIO2_15 },
-    ClkIn2_30 { freq: u32, pin: PIO2_30 },
-}
-
-impl Default for ClkInSelect {
-    fn default() -> Self {
-        todo!()
-    }
+    Xtal {
+        freq: u32,
+        bypass: bool,
+        low_power: bool,
+    },
+    ClkIn0_25 {
+        freq: u32,
+        pin: PIO0_25,
+    },
+    ClkIn2_15 {
+        freq: u32,
+        pin: PIO2_15,
+    },
+    ClkIn2_30 {
+        freq: u32,
+        pin: PIO2_30,
+    },
+    #[default]
+    None,
 }
 
 /// ```text
@@ -213,13 +328,13 @@ impl Default for ClkInSelect {
 // Bottom 2 bits = MAINCLKSELB
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MainClockSelect {
-    _48_60MIrcDiv4 = 0b00_00,
+    M4860IrcDiv4 = 0b00_00,
     ClkIn = 0b01_00,
-    _1mLposc = 0b10_00,
-    _48_60MIrc = 0b11_00,
-    _16mIrc = 0b00_01,
+    M1Lposc = 0b10_00,
+    M4860Irc = 0b11_00,
+    M16Irc = 0b00_01,
     MainPllClk = 0b0010,
-    _32kClk = 0b0011,
+    K32Clk = 0b0011,
 }
 
 /// ```text
@@ -233,18 +348,18 @@ pub enum MainClockSelect {
 /// PDSLEEPCFG0[15]         └───────────┘
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum _48_60mIrcSelect {
+pub enum M4860IrcSelect {
     Off,
     Mhz48,
     Mhz60,
 }
 
-impl _48_60mIrcSelect {
+impl M4860IrcSelect {
     pub fn freq(&self) -> Option<u32> {
         match self {
-            _48_60mIrcSelect::Off => None,
-            _48_60mIrcSelect::Mhz48 => Some(48_000_000),
-            _48_60mIrcSelect::Mhz60 => Some(60_000_000),
+            M4860IrcSelect::Off => None,
+            M4860IrcSelect::Mhz48 => Some(48_000_000),
+            M4860IrcSelect::Mhz60 => Some(60_000_000),
         }
     }
 
@@ -272,13 +387,13 @@ impl _48_60mIrcSelect {
 /// PDSLEEPCFG0[14]                  WAKECLK32KHZSEL[2:0]
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum _32kWakeClkSelect {
+pub enum K32WakeClkSelect {
     Off = 0b111,
-    _32kClk = 0b000,
-    Lp32k = 0b001,
+    K32Clk = 0b000,
+    K32Lp = 0b001,
 }
 
-impl _32kWakeClkSelect {
+impl K32WakeClkSelect {
     /// Returns `true` if the  32k wake clk select is [`Off`].
     ///
     /// [`Off`]: _32kWakeClkSelect::Off

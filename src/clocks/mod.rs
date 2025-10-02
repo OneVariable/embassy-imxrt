@@ -1,8 +1,8 @@
 use core::cell::RefCell;
 
 use config::{
-    ClkInSelect, ClockConfig, ClockOutSource, MainClockSelect, MainPll, MainPllClockSelect, _32kWakeClkSelect,
-    _48_60mIrcSelect,
+    ClkInSelect, ClockConfig, ClockOutSource, Div8, K32WakeClkSelect, M4860IrcSelect, MainClockSelect, MainPll,
+    MainPllClockSelect,
 };
 use critical_section::Mutex;
 use paste::paste;
@@ -143,7 +143,7 @@ pub struct Clocks {
     /// AUX1 PLL Clock Divider
     pub aux1_pll_clk: Option<u32>,
     /// External clock-in source, fed either by a clock source
-    /// or external oscillator
+    /// or external oscillator. Can be totally disabled.
     pub clk_in: Option<u32>,
     /// "Main Clock" sourced from a variety of selectable sources,
     /// used as the input for the CPU Clock Divider, ARM Trace Clock,
@@ -165,20 +165,6 @@ pub struct Clocks {
     // /// The MCLK input function, when it is connected to a pin by selecting it in the IOCON block. May
     // /// be used as the function clock of any Flexcomm Interface, and/or to clock the DMIC peripheral.
     // pub mclk_in: Option<u32>,
-    // /// This is the 1mlposc /32 (which is actually 31250Hz?), which can
-    // /// be used for the _32k_wake_clk
-    // pub lp_32k: StaticClock<32_768>,
-    //
-    // // These are more peripheral clocks
-    //
-    // // Clock after flexcomm-specific fractional rate generator, not handled by
-    // // init, instead handled by periph drivers
-    // pub frg_clk_n: [Option<u32>; FLEXCOMM_INSTANCES],
-    // pub frg_clk_14: Option<u32>,
-    // pub frg_clk_15: Option<u32>,
-    //
-    // /// Clock for the OS Event Timer peripheral.
-    // pub ostimer_clk: Option<u32>,
 }
 
 impl Clocks {
@@ -219,7 +205,7 @@ impl Clocks {
             .ok_or_else(|| ClockError::bad_config("frg pll needed but not enabled"))
     }
 
-    fn ensure_xtal_in(&self) -> Result<u32, ClockError> {
+    fn ensure_clk_in(&self) -> Result<u32, ClockError> {
         self.clk_in
             .ok_or_else(|| ClockError::bad_config("xtal_in needed but not enabled"))
     }
@@ -327,6 +313,11 @@ impl ClockOperator<'_> {
                 pin.set_function(crate::gpio::Function::F5);
                 self.clocks.clk_in = Some(freq);
             }
+            ClkInSelect::None => {
+                self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().none());
+                self.sysctl0.pdruncfg0().modify(|_r, w| w.sysxtal_pd().power_down());
+                self.clocks.clk_in = None;
+            }
         }
     }
 
@@ -369,12 +360,12 @@ impl ClockOperator<'_> {
         } else {
             // Select the 48/60m_irc clock speed
             self.clkctl0.ffroctl1().write(|w| w.update().update_safe_mode());
-            let (variant, freq) = match self.config._48_60m_irc_select {
-                _48_60mIrcSelect::Off => {
+            let (variant, freq) = match self.config.m4860_irc_select {
+                M4860IrcSelect::Off => {
                     return Err(ClockError::bad_config("48/60m_irc required but disabled"));
                 }
-                _48_60mIrcSelect::Mhz48 => (pac::clkctl0::ffroctl0::TrimRange::Ffro48mhz, 48_000_000),
-                _48_60mIrcSelect::Mhz60 => (pac::clkctl0::ffroctl0::TrimRange::Ffro60mhz, 60_000_000),
+                M4860IrcSelect::Mhz48 => (pac::clkctl0::ffroctl0::TrimRange::Ffro48mhz, 48_000_000),
+                M4860IrcSelect::Mhz60 => (pac::clkctl0::ffroctl0::TrimRange::Ffro60mhz, 60_000_000),
             };
             self.clkctl0.ffroctl0().write(|w| w.trim_range().variant(variant));
             self.clkctl0.ffroctl1().write(|w| w.update().normal_mode());
@@ -382,7 +373,7 @@ impl ClockOperator<'_> {
             // Enable
             self.sysctl0.pdruncfg0().modify(|_, w| w.ffro_pd().clear_bit());
             // NOTE: we know this is always a Some variant
-            self.clocks._48_60m_irc = self.config._48_60m_irc_select.freq();
+            self.clocks._48_60m_irc = self.config.m4860_irc_select.freq();
             Ok(freq)
         }
     }
@@ -472,12 +463,12 @@ impl ClockOperator<'_> {
         }
 
         let pll_input_freq = match sel.clock_select {
-            MainPllClockSelect::_16mIrc => self.ensure_16mhz_irc_active()?,
+            MainPllClockSelect::M16Irc => self.ensure_16mhz_irc_active()?,
             MainPllClockSelect::ClkIn => self
                 .clocks
                 .clk_in
                 .ok_or_else(|| ClockError::prog_err("We should have set clk_in by now"))?,
-            MainPllClockSelect::_48_60MIrcDiv2 => self.ensure_48_60mhz_irc_active()?,
+            MainPllClockSelect::M4860IrcDiv2 => self.ensure_48_60mhz_irc_active()?,
         };
 
         // Select the clock input we want
@@ -541,22 +532,13 @@ impl ClockOperator<'_> {
     /// ```
     fn setup_main_clock(&mut self) -> Result<(), ClockError> {
         self.clocks.main_clk = match self.config.main_clock_select {
-            MainClockSelect::_48_60MIrcDiv4 => self.ensure_48_60mhz_irc_active()? / 4,
-            MainClockSelect::ClkIn => {
-                return Err(ClockError::bad_config(
-                    "Main clock uses clk_in, but clk_in is not active",
-                ));
-            }
-            MainClockSelect::_1mLposc => self.ensure_1mhz_lposc_active()?,
-            MainClockSelect::_48_60MIrc => self.ensure_48_60mhz_irc_active()?,
-            MainClockSelect::_16mIrc => self.ensure_16mhz_irc_active()?,
-            MainClockSelect::MainPllClk => {
-                // TODO: AJM, did I implement this?
-                return Err(ClockError::bad_config(
-                    "Main clock uses main_pll_clk, but main_pll_clk is not active",
-                ));
-            }
-            MainClockSelect::_32kClk => self.ensure_32kclk_active()?,
+            MainClockSelect::M4860IrcDiv4 => self.ensure_48_60mhz_irc_active()? / 4,
+            MainClockSelect::ClkIn => self.ensure_clk_in_active()?,
+            MainClockSelect::M1Lposc => self.ensure_1mhz_lposc_active()?,
+            MainClockSelect::M4860Irc => self.ensure_48_60mhz_irc_active()?,
+            MainClockSelect::M16Irc => self.ensure_16mhz_irc_active()?,
+            MainClockSelect::MainPllClk => self.ensure_main_pll_clk_active()?,
+            MainClockSelect::K32Clk => self.ensure_32kclk_active()?,
         };
 
         // Select the main clock
@@ -598,7 +580,7 @@ impl ClockOperator<'_> {
     ///                                                  │
     ///                                  SYSTICKFCLKSEL[2:0]
     fn setup_system_clock(&mut self) -> Result<(), ClockError> {
-        let current_div = self.clkctl0.syscpuahbclkdiv().read().div();
+        let current_div = Div8::from_raw(self.clkctl0.syscpuahbclkdiv().read().div().bits());
         if current_div != self.config.sys_cpu_ahb_div {
             // "The clock being divided must be running for [reqflag] to change"
             if self.clocks.main_clk == 0 {
@@ -606,11 +588,11 @@ impl ClockOperator<'_> {
             }
             self.clkctl0
                 .syscpuahbclkdiv()
-                .modify(|_r, w| unsafe { w.div().bits(self.config.sys_cpu_ahb_div) });
+                .modify(|_r, w| unsafe { w.div().bits(self.config.sys_cpu_ahb_div.into_bits()) });
             // "Set when a change is made, clear when the change is complete"
             while self.clkctl0.syscpuahbclkdiv().read().reqflag().bit_is_set() {}
         }
-        self.clocks.sys_cpu_ahb_clk = Some(self.clocks.main_clk / (self.config.sys_cpu_ahb_div as u32 + 1));
+        self.clocks.sys_cpu_ahb_clk = Some(self.clocks.main_clk / self.config.sys_cpu_ahb_div.into_divisor());
 
         // NOTE: We currently don't do any of the following:
         //
@@ -651,23 +633,17 @@ impl ClockOperator<'_> {
 
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
-        if !(1..=256).contains(&main_pll.main_pll_clock_divider) {
-            return Err(ClockError::bad_config(
-                "`main_pll_clock_divider` is out of the allowed range",
-            ));
-        }
-
         // Halt and reset the div
         self.clkctl0.mainpllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.mainpllclkdiv().write(|w| {
             unsafe {
-                w.div().bits((main_pll.main_pll_clock_divider - 1) as u8);
+                w.div().bits(main_pll.main_pll_clock_divider.into_bits());
             }
             w.reset().set_bit()
         });
         while self.clkctl0.mainpllclkdiv().read().reqflag().bit_is_set() {}
 
-        self.clocks.main_pll_clk = Some(pfd_freq / (main_pll.main_pll_clock_divider - 1) as u32);
+        self.clocks.main_pll_clk = Some(pfd_freq / main_pll.main_pll_clock_divider.into_divisor());
         Ok(())
     }
 
@@ -701,23 +677,17 @@ impl ClockOperator<'_> {
 
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
-        if !(1..=256).contains(&main_pll.dsp_pll_clock_divider) {
-            return Err(ClockError::bad_config(
-                "`dsp_pll_clock_divider` is out of the allowed range",
-            ));
-        }
-
         // Halt and reset the div
         self.clkctl0.dsppllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.dsppllclkdiv().write(|w| {
             unsafe {
-                w.div().bits((main_pll.dsp_pll_clock_divider - 1) as u8);
+                w.div().bits(main_pll.dsp_pll_clock_divider.into_bits());
             }
             w.reset().set_bit()
         });
         while self.clkctl0.dsppllclkdiv().read().reqflag().bit_is_set() {}
 
-        self.clocks.dsp_pll_clk = Some(pfd_freq / (main_pll.dsp_pll_clock_divider - 1) as u32);
+        self.clocks.dsp_pll_clk = Some(pfd_freq / main_pll.dsp_pll_clock_divider.into_divisor());
         Ok(())
     }
 
@@ -750,23 +720,17 @@ impl ClockOperator<'_> {
 
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
-        if !(1..=256).contains(&main_pll.aux0_pll_clock_divider) {
-            return Err(ClockError::bad_config(
-                "`aux0_pll_clock_divider` is out of the allowed range",
-            ));
-        }
-
         // Halt and reset the div
         self.clkctl0.aux0pllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.aux0pllclkdiv().write(|w| {
             unsafe {
-                w.div().bits((main_pll.aux0_pll_clock_divider - 1) as u8);
+                w.div().bits(main_pll.aux0_pll_clock_divider.into_bits());
             }
             w.reset().set_bit()
         });
         while self.clkctl0.aux0pllclkdiv().read().reqflag().bit_is_set() {}
 
-        self.clocks.aux0_pll_clk = Some(pfd_freq / (main_pll.aux0_pll_clock_divider - 1) as u32);
+        self.clocks.aux0_pll_clk = Some(pfd_freq / main_pll.aux0_pll_clock_divider.into_divisor());
         Ok(())
     }
 
@@ -800,23 +764,17 @@ impl ClockOperator<'_> {
 
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
-        if !(1..=256).contains(&main_pll.aux1_pll_clock_divider) {
-            return Err(ClockError::bad_config(
-                "`aux1_pll_clock_divider` is out of the allowed range",
-            ));
-        }
-
         // Halt and reset the div
         self.clkctl0.aux1pllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.aux1pllclkdiv().write(|w| {
             unsafe {
-                w.div().bits((main_pll.aux1_pll_clock_divider - 1) as u8);
+                w.div().bits(main_pll.aux1_pll_clock_divider.into_bits());
             }
             w.reset().set_bit()
         });
         while self.clkctl0.aux1pllclkdiv().read().reqflag().bit_is_set() {}
 
-        self.clocks.aux1_pll_clk = Some(pfd_freq / (main_pll.aux1_pll_clock_divider - 1) as u32);
+        self.clocks.aux1_pll_clk = Some(pfd_freq / main_pll.aux1_pll_clock_divider.into_divisor());
         Ok(())
     }
 
@@ -867,13 +825,24 @@ impl ClockOperator<'_> {
         let Some(div) = self.config.frg_clk_pll_div else {
             return Ok(());
         };
+
+        // Max output frequency: 280MHz
         let pll_freq = self.ensure_main_pll_clk_active()?;
-        // TODO: Enforce max rate of 280_000_000
-        if self.clkctl1.frgpllclkdiv().read().div() != div {
-            self.clkctl1.frgpllclkdiv().modify(|_r, w| unsafe { w.div().bits(div) });
+        let after_div = pll_freq / div.into_divisor();
+        if after_div > 280_000_000 {
+            return Err(ClockError::bad_config("frg_pll exceeds 280MHz"));
+        }
+
+        // Apply div, if necessary
+        let current = Div8::from_raw(self.clkctl1.frgpllclkdiv().read().div().bits());
+        if current != div {
+            self.clkctl1
+                .frgpllclkdiv()
+                .modify(|_r, w| unsafe { w.div().bits(div.into_bits()) });
             while self.clkctl1.frgpllclkdiv().read().reqflag().bit_is_set() {}
         }
-        self.clocks.frg_pll_clk = Some(pll_freq / (div as u32 + 1));
+
+        self.clocks.frg_pll_clk = Some(after_div);
         Ok(())
     }
 
@@ -890,10 +859,10 @@ impl ClockOperator<'_> {
     ///                        WAKECLK32KHZSEL[2:0]
     /// ```
     fn setup_32k_wake_clk(&mut self) -> Result<u32, ClockError> {
-        let freq = match self.config._32k_wake_clk_select {
-            _32kWakeClkSelect::Off => 0,
-            _32kWakeClkSelect::_32kClk => self.ensure_32kclk_active()?,
-            _32kWakeClkSelect::Lp32k => {
+        let freq = match self.config.k32_wake_clk_select {
+            K32WakeClkSelect::Off => 0,
+            K32WakeClkSelect::K32Clk => self.ensure_32kclk_active()?,
+            K32WakeClkSelect::K32Lp => {
                 // Interestingly, 1_000_000 / 32 is 31250, NOT 32768. It's
                 // only 4.8% off, though the 1mhz lposc is ALSO +/-10%.
                 self.ensure_1mhz_lposc_active()? / 32
@@ -901,7 +870,7 @@ impl ClockOperator<'_> {
         };
         self.clkctl0
             .wakeclk32khzsel()
-            .write(|w| unsafe { w.sel().bits(self.config._32k_wake_clk_select as u8) });
+            .write(|w| unsafe { w.sel().bits(self.config.k32_wake_clk_select as u8) });
 
         // TODO: Consistency "Some(0)" vs "None"
         if freq != 0 {
@@ -1011,10 +980,10 @@ impl ClockOperator<'_> {
         self.clkctl1
             .clkoutdiv()
             .modify(|_, w| w.halt().set_bit().reset().set_bit());
-        self.clkctl1.clkoutdiv().modify(|_, w| unsafe { w.div().bits(div) });
+        self.clkctl1.clkoutdiv().modify(|_, w| unsafe { w.div().bits(div.into_bits()) });
         self.clkctl1.clkoutdiv().modify(|_, w| w.halt().clear_bit());
         while self.clkctl1.clkoutdiv().read().reqflag().bit_is_set() {}
-        freq /= 1u32 + div as u32;
+        freq /= div.into_divisor();
         self.clocks.clk_out = Some(freq);
 
         Ok(freq)
