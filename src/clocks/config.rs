@@ -83,7 +83,7 @@ impl Default for ClockConfig {
             k32_wake_clk_select: K32WakeClkSelect::K32Lp,
             main_pll: Some(MainPll {
                 // Select 48/60 div2, e.g. 30MHz
-                clock_select: MainPllClockSelect::M4860IrcDiv2,
+                clock_select: MainPllClockSelect::M16Irc,
                 // 30 x 20: 600MHz
                 multiplier: 20,
                 // 600 / (18 / 18) = 600MHz

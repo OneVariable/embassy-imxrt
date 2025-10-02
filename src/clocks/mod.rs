@@ -93,8 +93,8 @@ pub(crate) fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<()
     // If the clocks haven't been enabled, but are set in the config:
     //  we'll enable them now, as long as their inputs are active.
     _ = operator.ensure_1mhz_lposc_active();
-    _ = operator.ensure_48_60mhz_irc_active();
-    _ = operator.ensure_16mhz_irc_active();
+    _ = operator.ensure_48_60mhz_ffro_active();
+    _ = operator.ensure_16mhz_sfro_active();
     _ = operator.ensure_main_pll_clk_active();
     _ = operator.ensure_32kclk_active();
 
@@ -168,57 +168,72 @@ pub struct Clocks {
 }
 
 impl Clocks {
-    fn ensure_1m_lposc(&self) -> Result<u32, ClockError> {
+    fn ensure_1mhz_lposc_active(&self) -> Result<u32, ClockError> {
         self._1m_lposc
             .as_option()
             .ok_or_else(|| ClockError::bad_config("1m_irc/lposc needed but not enabled"))
     }
 
-    fn ensure_16m_sfro(&self) -> Result<u32, ClockError> {
+    fn ensure_16mhz_sfro_active(&self) -> Result<u32, ClockError> {
         self._16m_irc
             .as_option()
             .ok_or_else(|| ClockError::bad_config("16m_irc/sfro needed but not enabled"))
     }
 
-    fn ensure_48_60_ffro(&self) -> Result<u32, ClockError> {
+    fn ensure_48_60mhz_ffro_active(&self) -> Result<u32, ClockError> {
         self._48_60m_irc
             .ok_or_else(|| ClockError::bad_config("48/60m_irc/ffro needed but not enabled"))
     }
 
-    fn ensure_dsp_pll(&self) -> Result<u32, ClockError> {
+    fn ensure_dsp_pll_active(&self) -> Result<u32, ClockError> {
         self.dsp_pll_clk
             .ok_or_else(|| ClockError::bad_config("dsp pll needed but not enabled"))
     }
 
-    fn ensure_aux0_pll(&self) -> Result<u32, ClockError> {
+    fn ensure_aux0_pll_active(&self) -> Result<u32, ClockError> {
         self.aux0_pll_clk
             .ok_or_else(|| ClockError::bad_config("aux0 pll needed but not enabled"))
     }
 
-    fn ensure_aux1_pll(&self) -> Result<u32, ClockError> {
+    fn ensure_aux1_pll_active(&self) -> Result<u32, ClockError> {
         self.aux1_pll_clk
             .ok_or_else(|| ClockError::bad_config("aux1 pll needed but not enabled"))
     }
 
-    fn ensure_frg_pll(&self) -> Result<u32, ClockError> {
+    fn ensure_frg_pll_active(&self) -> Result<u32, ClockError> {
         self.frg_pll_clk
             .ok_or_else(|| ClockError::bad_config("frg pll needed but not enabled"))
     }
 
-    fn ensure_clk_in(&self) -> Result<u32, ClockError> {
+    fn ensure_clk_in_active(&self) -> Result<u32, ClockError> {
         self.clk_in
             .ok_or_else(|| ClockError::bad_config("xtal_in needed but not enabled"))
     }
 
-    fn ensure_32k_clk(&self) -> Result<u32, ClockError> {
+    fn ensure_32k_clk_active(&self) -> Result<u32, ClockError> {
         self._32k_clk
             .as_option()
             .ok_or_else(|| ClockError::bad_config("32k_clk needed but not enabled"))
     }
 
-    fn ensure_hclk(&self) -> Result<u32, ClockError> {
+    fn ensure_hclk_active(&self) -> Result<u32, ClockError> {
         self.sys_cpu_ahb_clk
             .ok_or_else(|| ClockError::bad_config("hclk needed but not enabled"))
+    }
+
+    fn ensure_main_pll_clk_active(&self) -> Result<u32, ClockError> {
+        self.main_pll_clk
+            .ok_or_else(|| ClockError::bad_config("main_pll_clk needed but not enabled"))
+    }
+
+    fn ensure_aux0_pll_clk_active(&self) -> Result<u32, ClockError> {
+        self.aux0_pll_clk
+            .ok_or_else(|| ClockError::bad_config("aux0_pll_clk needed but not enabled"))
+    }
+
+    fn ensure_aux1_pll_clk_active(&self) -> Result<u32, ClockError> {
+        self.aux1_pll_clk
+            .ok_or_else(|| ClockError::bad_config("aux1_pll_clk needed but not enabled"))
     }
 }
 
@@ -321,8 +336,6 @@ impl ClockOperator<'_> {
         }
     }
 
-    // TODO: Make names consistent with `Clocks::ensure_*`
-
     /// ```text
     ///  ┌──────────┐
     ///  │16 MHz    │ 16m_irc
@@ -333,7 +346,7 @@ impl ClockOperator<'_> {
     /// PDRUNCFG0[14],
     /// PDSLEEPCFG0[14]
     /// ```
-    fn ensure_16mhz_irc_active(&mut self) -> Result<u32, ClockError> {
+    fn ensure_16mhz_sfro_active(&mut self) -> Result<u32, ClockError> {
         if !self.clocks._16m_irc.enabled {
             if !self.config.enable_16m_irc {
                 return Err(ClockError::bad_config("16m_irc not enabled but required"));
@@ -354,7 +367,7 @@ impl ClockOperator<'_> {
     /// PDRUNCFG0[15],        └▶│Divide by 2│─┘
     /// PDSLEEPCFG0[15]         └───────────┘
     /// ```
-    fn ensure_48_60mhz_irc_active(&mut self) -> Result<u32, ClockError> {
+    fn ensure_48_60mhz_ffro_active(&mut self) -> Result<u32, ClockError> {
         if let Some(freq) = self.clocks._48_60m_irc {
             Ok(freq)
         } else {
@@ -463,12 +476,9 @@ impl ClockOperator<'_> {
         }
 
         let pll_input_freq = match sel.clock_select {
-            MainPllClockSelect::M16Irc => self.ensure_16mhz_irc_active()?,
-            MainPllClockSelect::ClkIn => self
-                .clocks
-                .clk_in
-                .ok_or_else(|| ClockError::prog_err("We should have set clk_in by now"))?,
-            MainPllClockSelect::M4860IrcDiv2 => self.ensure_48_60mhz_irc_active()?,
+            MainPllClockSelect::M16Irc => self.ensure_16mhz_sfro_active()?,
+            MainPllClockSelect::ClkIn => self.clocks.ensure_clk_in_active()?,
+            MainPllClockSelect::M4860IrcDiv2 => self.ensure_48_60mhz_ffro_active()?,
         };
 
         // Select the clock input we want
@@ -532,11 +542,11 @@ impl ClockOperator<'_> {
     /// ```
     fn setup_main_clock(&mut self) -> Result<(), ClockError> {
         self.clocks.main_clk = match self.config.main_clock_select {
-            MainClockSelect::M4860IrcDiv4 => self.ensure_48_60mhz_irc_active()? / 4,
+            MainClockSelect::M4860IrcDiv4 => self.ensure_48_60mhz_ffro_active()? / 4,
             MainClockSelect::ClkIn => self.ensure_clk_in_active()?,
             MainClockSelect::M1Lposc => self.ensure_1mhz_lposc_active()?,
-            MainClockSelect::M4860Irc => self.ensure_48_60mhz_irc_active()?,
-            MainClockSelect::M16Irc => self.ensure_16mhz_irc_active()?,
+            MainClockSelect::M4860Irc => self.ensure_48_60mhz_ffro_active()?,
+            MainClockSelect::M16Irc => self.ensure_16mhz_sfro_active()?,
             MainClockSelect::MainPllClk => self.ensure_main_pll_clk_active()?,
             MainClockSelect::K32Clk => self.ensure_32kclk_active()?,
         };
@@ -911,7 +921,7 @@ impl ClockOperator<'_> {
 
         let mut freq = match self.config.clk_out_select {
             ClockOutSource::M16Irc => {
-                let freq = self.ensure_16mhz_irc_active()?;
+                let freq = self.ensure_16mhz_sfro_active()?;
                 self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().sfro_clk());
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
                 freq
@@ -929,7 +939,7 @@ impl ClockOperator<'_> {
                 freq
             }
             ClockOutSource::M4860Irc => {
-                let freq = self.ensure_48_60mhz_irc_active()?;
+                let freq = self.ensure_48_60mhz_ffro_active()?;
                 self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().ffro_clk());
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
                 freq
@@ -949,17 +959,17 @@ impl ClockOperator<'_> {
                 freq
             }
             ClockOutSource::Aux0PllClk => {
-                let freq = self.clocks.ensure_aux0_pll()?;
+                let freq = self.clocks.ensure_aux0_pll_active()?;
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().syspll0_aux0_pll_clk());
                 freq
             }
             ClockOutSource::DspPllClk => {
-                let freq = self.clocks.ensure_dsp_pll()?;
+                let freq = self.clocks.ensure_dsp_pll_active()?;
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().dsp_pll_clk());
                 freq
             }
             ClockOutSource::Aux1PllClk => {
-                let freq = self.clocks.ensure_aux0_pll()?;
+                let freq = self.clocks.ensure_aux0_pll_active()?;
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().syspll0_aux0_pll_clk());
                 freq
             }
@@ -980,7 +990,9 @@ impl ClockOperator<'_> {
         self.clkctl1
             .clkoutdiv()
             .modify(|_, w| w.halt().set_bit().reset().set_bit());
-        self.clkctl1.clkoutdiv().modify(|_, w| unsafe { w.div().bits(div.into_bits()) });
+        self.clkctl1
+            .clkoutdiv()
+            .modify(|_, w| unsafe { w.div().bits(div.into_bits()) });
         self.clkctl1.clkoutdiv().modify(|_, w| w.halt().clear_bit());
         while self.clkctl1.clkoutdiv().read().reqflag().bit_is_set() {}
         freq /= div.into_divisor();
