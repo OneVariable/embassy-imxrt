@@ -314,18 +314,25 @@ impl ClockOperator<'_> {
                 self.clkctl0
                     .sysoscctl0()
                     .write(|w| w.bypass_enable().bit(bypass).lp_enable().bit(low_power));
+                self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().ext_xtal_clk());
                 self.clocks.clk_in = Some(freq);
             }
             ClkInSelect::ClkIn0_25 { freq, pin } => {
                 pin.set_function(crate::gpio::Function::F7);
+                self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().clock_in_clk());
+                self.sysctl0.pdruncfg0().modify(|_r, w| w.sysxtal_pd().power_down());
                 self.clocks.clk_in = Some(freq);
             }
             ClkInSelect::ClkIn2_15 { freq, pin } => {
                 pin.set_function(crate::gpio::Function::F7);
+                self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().clock_in_clk());
+                self.sysctl0.pdruncfg0().modify(|_r, w| w.sysxtal_pd().power_down());
                 self.clocks.clk_in = Some(freq);
             }
             ClkInSelect::ClkIn2_30 { freq, pin } => {
                 pin.set_function(crate::gpio::Function::F5);
+                self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().clock_in_clk());
+                self.sysctl0.pdruncfg0().modify(|_r, w| w.sysxtal_pd().power_down());
                 self.clocks.clk_in = Some(freq);
             }
             ClkInSelect::None => {
@@ -351,7 +358,8 @@ impl ClockOperator<'_> {
             if !self.config.enable_16m_irc {
                 return Err(ClockError::bad_config("16m_irc not enabled but required"));
             }
-            self.sysctl0.pdruncfg0().modify(|_, w| w.sfro_pd().clear_bit());
+            self.sysctl0.pdruncfg0_clr().write(|w| w.sfro_pd().clr_pdruncfg0());
+            while !self.sysctl0.pdruncfg0().read().sfro_pd().is_enabled() {}
             self.clocks._16m_irc.enabled = true;
         }
         Ok(self.clocks._16m_irc.frequency())
@@ -406,7 +414,8 @@ impl ClockOperator<'_> {
             if !self.config.enable_1m_lposc {
                 return Err(ClockError::bad_config("1m_lposc disabled but required"));
             }
-            self.sysctl0.pdruncfg0().modify(|_, w| w.lposc_pd().clear_bit());
+            self.sysctl0.pdruncfg0_clr().write(|w| w.lposc_pd().clr_pdruncfg0());
+            while self.clkctl0.lposcctl0().read().clkrdy().bit_is_clear() {}
             self.clocks._1m_lposc.enabled = true;
         }
         Ok(self.clocks._1m_lposc.frequency())
@@ -444,7 +453,7 @@ impl ClockOperator<'_> {
     /// Returns `Ok(None)` if the main PLL is disabled.
     /// Returns the frequency and MainPll selection if the main PLL is enabled
     fn setup_main_pll(&mut self, sel: Option<MainPll>) -> Result<Option<(u32, MainPll)>, ClockError> {
-        // Turn off the PLL if it was running
+        // Turn OFF the PLL
         //
         // TODO(AJM): Do we need to reset to some default FIRST before we disable the PLL
         // to ensure we don't hang the system when we disable the PLL here?
@@ -468,6 +477,11 @@ impl ClockOperator<'_> {
         //             SYSPLL0CLKSEL[2:0]
         let Some(sel) = sel else {
             self.clkctl0.syspll0clksel().write(|w| w.sel().none());
+            self.sysctl0.pdruncfg0_clr().write(|w| {
+                w.syspllldo_pd().clr_pdruncfg0();
+                w.syspllana_pd().clr_pdruncfg0();
+                w
+            });
             return Ok(None);
         };
 
@@ -491,21 +505,16 @@ impl ClockOperator<'_> {
         self.clkctl0.syspll0num().write(|w| unsafe { w.num().bits(0x0) });
         self.clkctl0.syspll0denom().write(|w| unsafe { w.denom().bits(0x1) });
 
-        self.clkctl0.syspll0ctl0().write(|w| {
-            // No bypass. We're using the PFD.
-            w.bypass().programmed_clk();
-            // Clear the reset because after this we're fully configured
-            w.reset().normal();
-            // Set the user provided multiplier
-            unsafe {
-                w.mult().bits(sel.multiplier);
-            }
-            // For the first period we need the HOLDRINGOFF_ENA on
-            w.holdringoff_ena().enable();
-            w
-        });
+        // delay_loop_clocks(30, desired_freq);
 
-        // Turn on the PLL
+        self.clkctl0
+            .syspll0ctl0()
+            .modify(|_r, w| unsafe { w.mult().bits(sel.multiplier) });
+
+        // Clear the reset because after this we're fully configured
+        self.clkctl0.syspll0ctl0().modify(|_r, w| w.reset().normal());
+
+        // Power up SYSPLL
         self.sysctl0.pdruncfg0_clr().write(|w| {
             w.syspllldo_pd().clr_pdruncfg0();
             w.syspllana_pd().clr_pdruncfg0();
@@ -630,12 +639,35 @@ impl ClockOperator<'_> {
         if !(12..=35).contains(&div) {
             return Err(ClockError::bad_config("`pfd0_div` is out of the allowed range"));
         }
+        // Power up SYSPLL
+        self.sysctl0.pdruncfg0_clr().write(|w| {
+            w.syspllana_pd().clr_pdruncfg0();
+            w.syspllldo_pd().clr_pdruncfg0();
+            w
+        });
 
+        // Set System PLL HOLDRINGOFF_ENA
+        self.clkctl0.syspll0ctl0().modify(|_, w| w.holdringoff_ena().enable());
+        // delay_loop_clocks(75, desired_freq);
+
+        // Clear System PLL HOLDRINGOFF_ENA
+        self.clkctl0.syspll0ctl0().modify(|_, w| w.holdringoff_ena().dsiable());
+        // delay_loop_clocks(15, desired_freq);
+
+        // gate the output and clear bits
+        self.clkctl0.syspll0pfd().modify(|_, w| {
+            unsafe {
+                w.pfd0().bits(0);
+            }
+            w.pfd0_clkgate().gated();
+            w
+        });
+
+        // set pfd bits and un-gate the clock output
         self.clkctl0.syspll0pfd().modify(|_, w| {
             unsafe {
                 w.pfd0().bits(div);
             }
-            w.pfd0_clkrdy().set_bit();
             w.pfd0_clkgate().not_gated();
             w
         });
@@ -644,13 +676,14 @@ impl ClockOperator<'_> {
         let pfd_freq = (pll_output_freq as u64 * 18 / div as u64) as u32;
 
         // Halt and reset the div
-        self.clkctl0.mainpllclkdiv().write(|w| w.halt().set_bit());
-        self.clkctl0.mainpllclkdiv().write(|w| {
+        self.clkctl0.mainpllclkdiv().modify(|_r, w| w.halt().set_bit());
+        self.clkctl0.mainpllclkdiv().modify(|_r, w| {
             unsafe {
                 w.div().bits(main_pll.main_pll_clock_divider.into_bits());
             }
             w.reset().set_bit()
         });
+        self.clkctl0.mainpllclkdiv().modify(|_r, w| w.halt().clear_bit());
         while self.clkctl0.mainpllclkdiv().read().reqflag().bit_is_set() {}
 
         self.clocks.main_pll_clk = Some(pfd_freq / main_pll.main_pll_clock_divider.into_divisor());
@@ -789,6 +822,7 @@ impl ClockOperator<'_> {
     }
 
     fn disable_pll_pfd0(&mut self) {
+        // TODO: pdruncfg0_set
         self.clkctl0.mainpllclkdiv().write(|w| w.halt().set_bit());
         self.clkctl0.syspll0pfd().modify(|_, w| w.pfd0_clkgate().gated());
         self.clocks.main_pll_clk = None;
