@@ -34,7 +34,7 @@ static CLOCKS: Mutex<RefCell<Option<Clocks>>> = Mutex::new(RefCell::new(None));
 ///
 /// 1. Via the [`with_clocks`] method, which gives read-only access to [`Clocks`]
 /// 2. Individual peripheral source clocks are returned by calls to [`enable_and_reset`]
-pub(crate) fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
+pub(crate) fn init(mut config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
     // TODO: When enabling clocks, wait the appropriate time
     //
     // Ensure we haven't already configured the clocks
@@ -55,6 +55,44 @@ pub(crate) fn init(config: ClockConfig, clk_in_select: ClkInSelect) -> Result<()
         clkctl1: unsafe { pac::Clkctl1::steal() },
         // sysctl1: pac::Sysctl1::steal(),
     };
+
+
+
+    //
+    // - [x] config.rtc.enable_and_reset() -> init_rtc_clk()
+    //   - moved to ensure_32kclk_active()
+    // - [x] config.lposc.enable_and_reset() -> init_lposc()
+    //   - moved to ensure_1mhz_lposc_active()
+    // - [x] config.ffro.enable_and_reset() -> init_ffro_clk()
+    //   - moved to ensure_48_60mhz_ffro_active()
+    // - [x] config.sfro.enable_and_reset()
+    //   - moved to ensure_16mhz_sfro_active()
+    // - [x] config.sys_osc.enable_and_reset()
+    //   - moved to setup_clock_in() and/or setup_main_clock()?
+    // - [ ] config.main_pll_clk.enable_and_reset()
+    //   - originally: init_syspll(), init_syspll_pfd0(), init_syspll_pfd2()
+    //   - moved to setup_main_pll(), setup_pll_pfd0, setup_pll_pfd1, setup_pll_pfd2, setup_pll_pfd3
+
+    // //
+    // // TODO: the original clocks code moves flexspi to ffro to avoid XIP
+    // // issues when updating PLL and main clocks. TODO: it also conditionally
+    // // does this for espi
+    // //
+    // // Should we walk this back at some point?
+    // //
+    // if matches!(operator.config.m4860_irc_select, M4860IrcSelect::Off) {
+    //     operator.config.m4860_irc_select = M4860IrcSelect::Mhz48;
+    // }
+    // operator.ensure_48_60mhz_ffro_active();
+    // operator.clkctl0.flexspifclksel().write(|w| w.sel().ffro_clk());
+    // operator.clkctl0.espiclksel().write(|w| w.sel().use_48_60m());
+    // //
+    // // END FIXUP
+    // //
+
+    // - [ ] init_syscpuahb_clk();
+    // - [ ] config.main_clk.enable_and_reset()
+    // - [ ] config.sys_clk.update_sys_core_clock()
 
     // If necessary, set up the clock-in
     operator.setup_clock_in(clk_in_select);
@@ -311,10 +349,25 @@ impl ClockOperator<'_> {
                 bypass,
                 low_power,
             } => {
+                // /!\ TODO: old code switches the CPU to FFRO, and I guess switches
+                // /!\ back at some point later?
+                // /!\
+                // /!\ // Let CPU run on ffro for safe switching
+                // /!\ clkctl0.mainclksela().write(|w| w.sel().ffro_clk());
+                // /!\ clkctl0.mainclksela().write(|w| w.sel().ffro_div_4());
+
+                // Power on SYSXTAL
+                self.sysctl0.pdruncfg0_clr().write(|w| w.sysxtal_pd().clr_pdruncfg0());
+
                 self.clkctl0
                     .sysoscctl0()
                     .write(|w| w.bypass_enable().bit(bypass).lp_enable().bit(low_power));
                 self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().ext_xtal_clk());
+
+                // /!\ TODO: allow clock to stabilize (260us @ SYS_OSC_DEFAULT_FREQ)
+                // /!\
+                // /!\ delay_loop_clocks(260, SYS_OSC_DEFAULT_FREQ.into());
+
                 self.clocks.clk_in = Some(freq);
             }
             ClkInSelect::ClkIn0_25 { freq, pin } => {
@@ -358,8 +411,11 @@ impl ClockOperator<'_> {
             if !self.config.enable_16m_irc {
                 return Err(ClockError::bad_config("16m_irc not enabled but required"));
             }
+            // Power up SFRO
             self.sysctl0.pdruncfg0_clr().write(|w| w.sfro_pd().clr_pdruncfg0());
+            // wait until ready
             while !self.sysctl0.pdruncfg0().read().sfro_pd().is_enabled() {}
+
             self.clocks._16m_irc.enabled = true;
         }
         Ok(self.clocks._16m_irc.frequency())
@@ -379,6 +435,9 @@ impl ClockOperator<'_> {
         if let Some(freq) = self.clocks._48_60m_irc {
             Ok(freq)
         } else {
+            // Power on FFRO (48/60MHz)
+            self.sysctl0.pdruncfg0_clr().write(|w| w.ffro_pd().clr_pdruncfg0());
+
             // Select the 48/60m_irc clock speed
             self.clkctl0.ffroctl1().write(|w| w.update().update_safe_mode());
             let (variant, freq) = match self.config.m4860_irc_select {
@@ -391,8 +450,11 @@ impl ClockOperator<'_> {
             self.clkctl0.ffroctl0().write(|w| w.trim_range().variant(variant));
             self.clkctl0.ffroctl1().write(|w| w.update().normal_mode());
 
-            // Enable
-            self.sysctl0.pdruncfg0().modify(|_, w| w.ffro_pd().clear_bit());
+            // /!\ TODO: restore delays? 50us @ 12mhz
+            // /!\
+            // /!\ // Delay enough for FFRO to be stable in case it was just powered on
+            // /!\ delay_loop_clocks(50, 12_000_000);
+
             // NOTE: we know this is always a Some variant
             self.clocks._48_60m_irc = self.config.m4860_irc_select.freq();
             Ok(freq)
@@ -414,8 +476,12 @@ impl ClockOperator<'_> {
             if !self.config.enable_1m_lposc {
                 return Err(ClockError::bad_config("1m_lposc disabled but required"));
             }
+            // Enable low power oscillator
             self.sysctl0.pdruncfg0_clr().write(|w| w.lposc_pd().clr_pdruncfg0());
+
+            // Wait for low-power oscillator to be ready (typically 64 us)
             while self.clkctl0.lposcctl0().read().clkrdy().bit_is_clear() {}
+
             self.clocks._1m_lposc.enabled = true;
         }
         Ok(self.clocks._1m_lposc.frequency())
@@ -436,8 +502,27 @@ impl ClockOperator<'_> {
             if !self.config.enable_32k_clk {
                 return Err(ClockError::bad_config("32k_clk required but not enabled"));
             }
+            // Enable the RTC peripheral clock
+            self.clkctl1.pscctl2_set().write(|w| w.rtc_lite_clk_set().set_clock());
+            //
+            // /!\ TODO: The original code directly sets RTC peripheral stuff directly in
+            // /!\ the init. We need to decide what to do with this.
+            // /!\ let rtc = unsafe { pac::Rtc::steal() };
+            // /!\ //
+            // /!\ // Make sure the reset bit is cleared amd RTC OSC is powered up
+            // /!\ rtc.ctrl().modify(|_r, w| w.swreset().not_in_reset().rtc_osc_pd().enable());
+            // /!\ // set initial match value, note that with a 15 bit count-down timer this would
+            // /!\ // typically be 0x8000, but we are "doing some clever things" in time-driver.rs,
+            // /!\ // read more about it in the comments there
+            // /!\ // SAFETY: unsafe needed to write the bits
+            // /!\ rtc.wake().write(|w| unsafe { w.bits(0xA) });
+
+            // Enable 32K OSC
             self.clkctl0.osc32khzctl0().write(|w| w.ena32khz().set_bit());
             self.clocks._32k_clk.enabled = true;
+
+            // /!\ // enable rtc clk
+            // /!\ rtc.ctrl().modify(|_, w| w.rtc_en().enable());
         }
         Ok(self.clocks._32k_clk.frequency())
     }
@@ -477,11 +562,12 @@ impl ClockOperator<'_> {
         //             SYSPLL0CLKSEL[2:0]
         let Some(sel) = sel else {
             self.clkctl0.syspll0clksel().write(|w| w.sel().none());
-            self.sysctl0.pdruncfg0_clr().write(|w| {
-                w.syspllldo_pd().clr_pdruncfg0();
-                w.syspllana_pd().clr_pdruncfg0();
-                w
-            });
+            // TODO: If this is none, I don't think we need to re-enable the PLL?
+            // self.sysctl0.pdruncfg0_clr().write(|w| {
+            //     w.syspllldo_pd().clr_pdruncfg0();
+            //     w.syspllana_pd().clr_pdruncfg0();
+            //     w
+            // });
             return Ok(None);
         };
 
@@ -504,9 +590,6 @@ impl ClockOperator<'_> {
         // This means we're only using the integer multiplier as specified in the config
         self.clkctl0.syspll0num().write(|w| unsafe { w.num().bits(0x0) });
         self.clkctl0.syspll0denom().write(|w| unsafe { w.denom().bits(0x1) });
-
-        // delay_loop_clocks(30, desired_freq);
-
         self.clkctl0
             .syspll0ctl0()
             .modify(|_r, w| unsafe { w.mult().bits(sel.multiplier) });
@@ -523,6 +606,8 @@ impl ClockOperator<'_> {
 
         // Get the amount of us we need to wait
         let lock_time_div_2 = self.clkctl0.syspll0locktimediv2().read().locktimediv2().bits();
+        // TODO /!\: delay_loop_clocks((150 & 0xFFFF) / 2, 12_000_000);
+        self.clkctl0.syspll0ctl0().modify(|_, w| w.holdringoff_ena().enable());
         cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * lock_time_div_2 as u32);
 
         // For the second period we need the HOLDRINGOFF_ENA off
@@ -639,20 +724,6 @@ impl ClockOperator<'_> {
         if !(12..=35).contains(&div) {
             return Err(ClockError::bad_config("`pfd0_div` is out of the allowed range"));
         }
-        // Power up SYSPLL
-        self.sysctl0.pdruncfg0_clr().write(|w| {
-            w.syspllana_pd().clr_pdruncfg0();
-            w.syspllldo_pd().clr_pdruncfg0();
-            w
-        });
-
-        // Set System PLL HOLDRINGOFF_ENA
-        self.clkctl0.syspll0ctl0().modify(|_, w| w.holdringoff_ena().enable());
-        // delay_loop_clocks(75, desired_freq);
-
-        // Clear System PLL HOLDRINGOFF_ENA
-        self.clkctl0.syspll0ctl0().modify(|_, w| w.holdringoff_ena().dsiable());
-        // delay_loop_clocks(15, desired_freq);
 
         // gate the output and clear bits
         self.clkctl0.syspll0pfd().modify(|_, w| {
@@ -683,7 +754,11 @@ impl ClockOperator<'_> {
             }
             w.reset().set_bit()
         });
-        self.clkctl0.mainpllclkdiv().modify(|_r, w| w.halt().clear_bit());
+        self.clkctl0.mainpllclkdiv().modify(|_r, w| {
+            w.halt().clear_bit();
+            w.reset().clear_bit();
+            w
+        });
         while self.clkctl0.mainpllclkdiv().read().reqflag().bit_is_set() {}
 
         self.clocks.main_pll_clk = Some(pfd_freq / main_pll.main_pll_clock_divider.into_divisor());

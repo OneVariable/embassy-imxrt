@@ -95,7 +95,8 @@ impl Default for ClockConfig {
                 // 600 / (18 / 18) = 600MHz
                 pfd3_div: Some(18),
                 // 600 / 2 = 300MHz
-                main_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
+                // TODO: The datasheet says this has to be zero!
+                main_pll_clock_divider: const { Div8::from_divisor(1).unwrap() },
                 // 600 / 2 = 300MHz
                 dsp_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
                 // 600 / 2 = 300MHz
