@@ -94,15 +94,6 @@ impl Default for ClockConfig {
                 pfd2_div: Some(18),
                 // 600 / (18 / 18) = 600MHz
                 pfd3_div: Some(18),
-                // 600 / 2 = 300MHz
-                // TODO: The datasheet says this has to be zero!
-                main_pll_clock_divider: const { Div8::from_divisor(1).unwrap() },
-                // 600 / 2 = 300MHz
-                dsp_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
-                // 600 / 2 = 300MHz
-                aux0_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
-                // 600 / 2 = 300MHz
-                aux1_pll_clock_divider: const { Div8::from_divisor(2).unwrap() },
             }),
             // Select Main PLL Clock, which is at 300MHz
             main_clock_select: MainClockSelect::MainPllClk,
@@ -239,22 +230,6 @@ pub struct MainPll {
     /// Allowed range: `12..=35`.
     /// Applied multiplier = `18/div`.
     pub pfd3_div: Option<u8>,
-    /// Clock divider for the `main_pll_clk`.
-    ///
-    /// Allowed range: `1..=256`.
-    pub main_pll_clock_divider: Div8,
-    /// Clock divider for the `dsp_pll_clk`.
-    ///
-    /// Allowed range: `1..=256`.
-    pub dsp_pll_clock_divider: Div8,
-    /// Clock divider for the `aux0_pll_clk`.
-    ///
-    /// Allowed range: `1..=256`.
-    pub aux0_pll_clock_divider: Div8,
-    /// Clock divider for the `aux1_pll_clk`.
-    ///
-    /// Allowed range: `1..=256`.
-    pub aux1_pll_clock_divider: Div8,
 }
 
 /// ```text

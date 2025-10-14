@@ -364,9 +364,9 @@ impl ClockOperator<'_> {
                     .write(|w| w.bypass_enable().bit(bypass).lp_enable().bit(low_power));
                 self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().ext_xtal_clk());
 
-                // /!\ TODO: allow clock to stabilize (260us @ SYS_OSC_DEFAULT_FREQ)
-                // /!\
-                // /!\ delay_loop_clocks(260, SYS_OSC_DEFAULT_FREQ.into());
+                // allow clock to stabilize (260us) - TODO: this might be WAY too long
+                // if we have a much slower clock at this point than 300MHz!
+                cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * 260);
 
                 self.clocks.clk_in = Some(freq);
             }
@@ -450,10 +450,9 @@ impl ClockOperator<'_> {
             self.clkctl0.ffroctl0().write(|w| w.trim_range().variant(variant));
             self.clkctl0.ffroctl1().write(|w| w.update().normal_mode());
 
-            // /!\ TODO: restore delays? 50us @ 12mhz
-            // /!\
-            // /!\ // Delay enough for FFRO to be stable in case it was just powered on
-            // /!\ delay_loop_clocks(50, 12_000_000);
+            // Delay enough for FFRO to be stable in case it was just powered on
+            // TODO: shorten too-long-wait?
+            cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * 50);
 
             // NOTE: we know this is always a Some variant
             self.clocks._48_60m_irc = self.config.m4860_irc_select.freq();
@@ -562,12 +561,6 @@ impl ClockOperator<'_> {
         //             SYSPLL0CLKSEL[2:0]
         let Some(sel) = sel else {
             self.clkctl0.syspll0clksel().write(|w| w.sel().none());
-            // TODO: If this is none, I don't think we need to re-enable the PLL?
-            // self.sysctl0.pdruncfg0_clr().write(|w| {
-            //     w.syspllldo_pd().clr_pdruncfg0();
-            //     w.syspllana_pd().clr_pdruncfg0();
-            //     w
-            // });
             return Ok(None);
         };
 
@@ -606,7 +599,6 @@ impl ClockOperator<'_> {
 
         // Get the amount of us we need to wait
         let lock_time_div_2 = self.clkctl0.syspll0locktimediv2().read().locktimediv2().bits();
-        // TODO /!\: delay_loop_clocks((150 & 0xFFFF) / 2, 12_000_000);
         self.clkctl0.syspll0ctl0().modify(|_, w| w.holdringoff_ena().enable());
         cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * lock_time_div_2 as u32);
 
@@ -748,12 +740,19 @@ impl ClockOperator<'_> {
 
         // Halt and reset the div
         self.clkctl0.mainpllclkdiv().modify(|_r, w| w.halt().set_bit());
+
+        // NOTE: Datasheet says:
+        //
+        // > this clock divider must be set to divide by 1 (DIV = 0). All of the places that
+        // > main_pll_clk goes have additional downstream dividers (SYSCPUAHBCLKDIV and
+        // > DSPCPUCLKDIV for example) that can lower the rate locally if desired.
         self.clkctl0.mainpllclkdiv().modify(|_r, w| {
             unsafe {
-                w.div().bits(main_pll.main_pll_clock_divider.into_bits());
+                w.div().bits(0);
             }
             w.reset().set_bit()
         });
+        // Clear halt and reset bits
         self.clkctl0.mainpllclkdiv().modify(|_r, w| {
             w.halt().clear_bit();
             w.reset().clear_bit();
@@ -761,7 +760,7 @@ impl ClockOperator<'_> {
         });
         while self.clkctl0.mainpllclkdiv().read().reqflag().bit_is_set() {}
 
-        self.clocks.main_pll_clk = Some(pfd_freq / main_pll.main_pll_clock_divider.into_divisor());
+        self.clocks.main_pll_clk = Some(pfd_freq);
         Ok(())
     }
 
@@ -783,11 +782,19 @@ impl ClockOperator<'_> {
             return Err(ClockError::bad_config("`pfd1_div` is out of the allowed range"));
         }
 
+        // gate the output and clear bits
+        self.clkctl0.syspll0pfd().modify(|_, w| {
+            unsafe {
+                w.pfd1().bits(0);
+            }
+            w.pfd1_clkgate().gated();
+            w
+        });
+        // set pfd bits and un-gate the clock output
         self.clkctl0.syspll0pfd().modify(|_, w| {
             unsafe {
                 w.pfd1().bits(div);
             }
-            w.pfd1_clkrdy().set_bit();
             w.pfd1_clkgate().not_gated();
             w
         });
@@ -797,15 +804,22 @@ impl ClockOperator<'_> {
 
         // Halt and reset the div
         self.clkctl0.dsppllclkdiv().write(|w| w.halt().set_bit());
+        // Must be zero (div by 1). See note in setup_pll_pfd0.
         self.clkctl0.dsppllclkdiv().write(|w| {
             unsafe {
-                w.div().bits(main_pll.dsp_pll_clock_divider.into_bits());
+                w.div().bits(0);
             }
             w.reset().set_bit()
         });
+        // Clear halt and reset bits
+        self.clkctl0.dsppllclkdiv().modify(|_r, w| {
+            w.halt().clear_bit();
+            w.reset().clear_bit();
+            w
+        });
         while self.clkctl0.dsppllclkdiv().read().reqflag().bit_is_set() {}
 
-        self.clocks.dsp_pll_clk = Some(pfd_freq / main_pll.dsp_pll_clock_divider.into_divisor());
+        self.clocks.dsp_pll_clk = Some(pfd_freq);
         Ok(())
     }
 
@@ -826,11 +840,20 @@ impl ClockOperator<'_> {
         if !(12..=35).contains(&div) {
             return Err(ClockError::bad_config("`pfd2_div` is out of the allowed range"));
         }
+
+        // gate the output and clear bits
+        self.clkctl0.syspll0pfd().modify(|_, w| {
+            unsafe {
+                w.pfd2().bits(0);
+            }
+            w.pfd2_clkgate().gated();
+            w
+        });
+        // set pfd bits and un-gate the clock output
         self.clkctl0.syspll0pfd().modify(|_, w| {
             unsafe {
                 w.pfd2().bits(div);
             }
-            w.pfd2_clkrdy().set_bit();
             w.pfd2_clkgate().not_gated();
             w
         });
@@ -840,15 +863,22 @@ impl ClockOperator<'_> {
 
         // Halt and reset the div
         self.clkctl0.aux0pllclkdiv().write(|w| w.halt().set_bit());
+        // Must be zero (div by 1). See note in setup_pll_pfd0.
         self.clkctl0.aux0pllclkdiv().write(|w| {
             unsafe {
-                w.div().bits(main_pll.aux0_pll_clock_divider.into_bits());
+                w.div().bits(0);
             }
             w.reset().set_bit()
         });
+        // Clear halt and reset bits
+        self.clkctl0.aux0pllclkdiv().modify(|_r, w| {
+            w.halt().clear_bit();
+            w.reset().clear_bit();
+            w
+        });
         while self.clkctl0.aux0pllclkdiv().read().reqflag().bit_is_set() {}
 
-        self.clocks.aux0_pll_clk = Some(pfd_freq / main_pll.aux0_pll_clock_divider.into_divisor());
+        self.clocks.aux0_pll_clk = Some(pfd_freq);
         Ok(())
     }
 
@@ -870,11 +900,19 @@ impl ClockOperator<'_> {
             return Err(ClockError::bad_config("`pfd3_div` is out of the allowed range"));
         }
 
+        // gate the output and clear bits
+        self.clkctl0.syspll0pfd().modify(|_, w| {
+            unsafe {
+                w.pfd3().bits(0);
+            }
+            w.pfd3_clkgate().gated();
+            w
+        });
+        // set pfd bits and un-gate the clock output
         self.clkctl0.syspll0pfd().modify(|_, w| {
             unsafe {
                 w.pfd3().bits(div);
             }
-            w.pfd3_clkrdy().set_bit();
             w.pfd3_clkgate().not_gated();
             w
         });
@@ -884,15 +922,22 @@ impl ClockOperator<'_> {
 
         // Halt and reset the div
         self.clkctl0.aux1pllclkdiv().write(|w| w.halt().set_bit());
+        // Must be zero (div by 1). See note in setup_pll_pfd0.
         self.clkctl0.aux1pllclkdiv().write(|w| {
             unsafe {
-                w.div().bits(main_pll.aux1_pll_clock_divider.into_bits());
+                w.div().bits(0);
             }
             w.reset().set_bit()
         });
+        // Clear halt and reset bits
+        self.clkctl0.aux1pllclkdiv().modify(|_r, w| {
+            w.halt().clear_bit();
+            w.reset().clear_bit();
+            w
+        });
         while self.clkctl0.aux1pllclkdiv().read().reqflag().bit_is_set() {}
 
-        self.clocks.aux1_pll_clk = Some(pfd_freq / main_pll.aux1_pll_clock_divider.into_divisor());
+        self.clocks.aux1_pll_clk = Some(pfd_freq);
         Ok(())
     }
 
