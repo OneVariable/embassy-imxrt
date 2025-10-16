@@ -1,7 +1,8 @@
 use core::cell::RefCell;
 
 use config::{
-    ClkInSelect, ClkOutSelect, ClockConfig, ClockOutSource, Div8, K32WakeClkSelect, M4860IrcSelect, MainClockSelect, MainPll, MainPllClockSelect
+    ClkInSelect, ClkOutSelect, ClockConfig, ClockOutSource, Div8, K32WakeClkSelect, M4860IrcSelect, MainClockSelect,
+    MainPll, MainPllClockSelect, PoweredClock,
 };
 use critical_section::Mutex;
 use paste::paste;
@@ -59,8 +60,6 @@ pub(crate) fn init(
         clkctl1: unsafe { pac::Clkctl1::steal() },
         // sysctl1: pac::Sysctl1::steal(),
     };
-
-
 
     //
     // - [x] config.rtc.enable_and_reset() -> init_rtc_clk()
@@ -134,11 +133,22 @@ pub(crate) fn init(
     //  we'll ignore the err.
     // If the clocks haven't been enabled, but are set in the config:
     //  we'll enable them now, as long as their inputs are active.
-    _ = operator.ensure_1mhz_lposc_active();
-    _ = operator.ensure_48_60mhz_ffro_active();
-    _ = operator.ensure_16mhz_sfro_active();
+    if let Some(level) = operator.config.enable_1m_lposc.as_ref() {
+        _ = operator.ensure_1mhz_lposc_active(level);
+    }
+    match operator.config.m4860_irc_select {
+        M4860IrcSelect::Off => {},
+        M4860IrcSelect::Mhz48(level) | M4860IrcSelect::Mhz60(level) => {
+            _ = operator.ensure_48_60mhz_ffro_active(&level);
+        }
+    }
+    if let Some(level) = operator.config.enable_16m_irc.as_ref() {
+        _ = operator.ensure_16mhz_sfro_active(level);
+    }
     _ = operator.ensure_main_pll_clk_active();
-    _ = operator.ensure_32kclk_active();
+    if let Some(level) = operator.config.enable_32k_clk.as_ref() {
+        _ = operator.ensure_32kclk_active(level);
+    }
 
     // Optionally enable the 32k_wake_clk
     operator.setup_32k_wake_clk()?;
@@ -171,7 +181,7 @@ pub struct Clocks {
     pub _32k_wake_clk: Option<u32>,
     /// "FFRO", a higher power, +/- 1%, 48- or 60-MHz internal oscillator
     /// clock source
-    pub _48_60m_irc: Option<u32>,
+    pub _48_60m_irc: M4860IrcSelect,
     /// Output of the Main PLL (as PFD0), divided by the
     /// Main PLL Clock Divider
     pub main_pll_clk: Option<u32>,
@@ -223,8 +233,11 @@ impl Clocks {
     }
 
     fn ensure_48_60mhz_ffro_active(&self) -> Result<u32, ClockError> {
-        self._48_60m_irc
-            .ok_or_else(|| ClockError::bad_config("48/60m_irc/ffro needed but not enabled"))
+        match self._48_60m_irc {
+            M4860IrcSelect::Off => Err(ClockError::bad_config("48/60m_irc/ffro needed but not enabled")),
+            M4860IrcSelect::Mhz48(_powered_clock) => Ok(48_000_000),
+            M4860IrcSelect::Mhz60(_powered_clock) => Ok(60_000_000),
+        }
     }
 
     fn ensure_dsp_pll_active(&self) -> Result<u32, ClockError> {
@@ -281,7 +294,7 @@ impl Clocks {
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct StaticClock<const F: u32> {
-    pub enabled: bool,
+    pub powered: Option<PoweredClock>,
 }
 
 impl<const F: u32> StaticClock<F> {
@@ -296,7 +309,7 @@ impl<const F: u32> StaticClock<F> {
 
 impl<const F: u32> From<StaticClock<F>> for Option<u32> {
     fn from(value: StaticClock<F>) -> Self {
-        value.enabled.then_some(F)
+        value.powered.map(|_| F)
     }
 }
 
@@ -410,19 +423,31 @@ impl ClockOperator<'_> {
     /// PDRUNCFG0[14],
     /// PDSLEEPCFG0[14]
     /// ```
-    fn ensure_16mhz_sfro_active(&mut self) -> Result<u32, ClockError> {
-        if !self.clocks._16m_irc.enabled {
-            if !self.config.enable_16m_irc {
-                return Err(ClockError::bad_config("16m_irc not enabled but required"));
-            }
-            // Power up SFRO
-            self.sysctl0.pdruncfg0_clr().write(|w| w.sfro_pd().clr_pdruncfg0());
-            // wait until ready
-            while !self.sysctl0.pdruncfg0().read().sfro_pd().is_enabled() {}
+    fn ensure_16mhz_sfro_active(&mut self, at_level: &PoweredClock) -> Result<u32, ClockError> {
+        match self.clocks._16m_irc.powered {
+            None => {
+                let Some(level) = self.config.enable_16m_irc else {
+                    return Err(ClockError::bad_config("16m_irc not enabled but required"));
+                };
 
-            self.clocks._16m_irc.enabled = true;
+                if !level.meets_requirement_of(at_level) {
+                    return Err(ClockError::bad_config("16m_irc enabled but not in deep sleep"));
+                }
+
+                // Power up SFRO
+                self.sysctl0.pdruncfg0_clr().write(|w| w.sfro_pd().clr_pdruncfg0());
+                if matches!(level, PoweredClock::AlwaysEnabled) {
+                    self.sysctl0.pdsleepcfg0().modify(|_r, w| w.sfro_pd().clear_bit());
+                }
+                // wait until ready
+                while !self.sysctl0.pdruncfg0().read().sfro_pd().is_enabled() {}
+
+                self.clocks._16m_irc.powered = Some(level);
+                Ok(self.clocks._16m_irc.frequency())
+            }
+            Some(level) if level.meets_requirement_of(at_level) => Ok(self.clocks._16m_irc.frequency()),
+            _ => Err(ClockError::bad_config("16m_irc enabled but not in deep sleep")),
         }
-        Ok(self.clocks._16m_irc.frequency())
     }
 
     /// ```text
@@ -435,32 +460,46 @@ impl ClockOperator<'_> {
     /// PDRUNCFG0[15],        └▶│Divide by 2│─┘
     /// PDSLEEPCFG0[15]         └───────────┘
     /// ```
-    fn ensure_48_60mhz_ffro_active(&mut self) -> Result<u32, ClockError> {
-        if let Some(freq) = self.clocks._48_60m_irc {
-            Ok(freq)
-        } else {
-            // Power on FFRO (48/60MHz)
-            self.sysctl0.pdruncfg0_clr().write(|w| w.ffro_pd().clr_pdruncfg0());
+    fn ensure_48_60mhz_ffro_active(&mut self, at_level: &PoweredClock) -> Result<u32, ClockError> {
+        match self.clocks._48_60m_irc {
+            M4860IrcSelect::Off => {
+                // Power on FFRO (48/60MHz)
+                self.sysctl0.pdruncfg0_clr().write(|w| w.ffro_pd().clr_pdruncfg0());
 
-            // Select the 48/60m_irc clock speed
-            self.clkctl0.ffroctl1().write(|w| w.update().update_safe_mode());
-            let (variant, freq) = match self.config.m4860_irc_select {
-                M4860IrcSelect::Off => {
-                    return Err(ClockError::bad_config("48/60m_irc required but disabled"));
+                // Select the 48/60m_irc clock speed
+                self.clkctl0.ffroctl1().write(|w| w.update().update_safe_mode());
+                let (level, freq) = match self.config.m4860_irc_select {
+                    M4860IrcSelect::Off => {
+                        return Err(ClockError::bad_config("48/60m_irc required but disabled"));
+                    }
+                    M4860IrcSelect::Mhz48(level) => {
+                        assert!(level.meets_requirement_of(at_level), "todo");
+                        self.clkctl0.ffroctl0().write(|w| w.trim_range().ffro_48mhz());
+                        (level, 48_000_000)
+                    }
+                    M4860IrcSelect::Mhz60(level) => {
+                        assert!(level.meets_requirement_of(at_level), "todo");
+                        self.clkctl0.ffroctl0().write(|w| w.trim_range().ffro_60mhz());
+                        (level, 60_000_000)
+                    }
+                };
+                if matches!(level, PoweredClock::AlwaysEnabled) {
+                    self.sysctl0.pdsleepcfg0().modify(|_r, w| w.ffro_pd().clear_bit());
                 }
-                M4860IrcSelect::Mhz48 => (pac::clkctl0::ffroctl0::TrimRange::Ffro48mhz, 48_000_000),
-                M4860IrcSelect::Mhz60 => (pac::clkctl0::ffroctl0::TrimRange::Ffro60mhz, 60_000_000),
-            };
-            self.clkctl0.ffroctl0().write(|w| w.trim_range().variant(variant));
-            self.clkctl0.ffroctl1().write(|w| w.update().normal_mode());
 
-            // Delay enough for FFRO to be stable in case it was just powered on
-            // TODO: shorten too-long-wait?
-            cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * 50);
+                self.clkctl0.ffroctl1().write(|w| w.update().normal_mode());
 
-            // NOTE: we know this is always a Some variant
-            self.clocks._48_60m_irc = self.config.m4860_irc_select.freq();
-            Ok(freq)
+                // Delay enough for FFRO to be stable in case it was just powered on
+                // TODO: shorten too-long-wait?
+                cortex_m::asm::delay(WORST_CASE_TICKS_PER_US * 50);
+
+                // NOTE: we know this is always a Some variant
+                self.clocks._48_60m_irc = self.config.m4860_irc_select;
+                Ok(freq)
+            }
+            M4860IrcSelect::Mhz48(level) if level.meets_requirement_of(at_level) => Ok(48_000_000),
+            M4860IrcSelect::Mhz60(level) if level.meets_requirement_of(at_level) => Ok(60_000_000),
+            _ => Err(ClockError::bad_config("48/60m_irc required but disabled")),
         }
     }
 
@@ -474,20 +513,30 @@ impl ClockOperator<'_> {
     /// PDRUNCFG0[14],
     /// PDSLEEPCFG0[14]
     /// ```
-    fn ensure_1mhz_lposc_active(&mut self) -> Result<u32, ClockError> {
-        if !self.clocks._1m_lposc.enabled {
-            if !self.config.enable_1m_lposc {
-                return Err(ClockError::bad_config("1m_lposc disabled but required"));
+    fn ensure_1mhz_lposc_active(&mut self, at_level: &PoweredClock) -> Result<u32, ClockError> {
+        match self.clocks._1m_lposc.powered {
+            None => {
+                let Some(level) = self.config.enable_1m_lposc else {
+                    return Err(ClockError::bad_config("1m_lposc disabled but required"));
+                };
+                if !level.meets_requirement_of(at_level) {
+                    return Err(ClockError::bad_config("1m_lposc enabled but not for deep sleep"));
+                }
+                // Enable low power oscillator
+                self.sysctl0.pdruncfg0_clr().write(|w| w.lposc_pd().clr_pdruncfg0());
+                if matches!(level, PoweredClock::AlwaysEnabled) {
+                    self.sysctl0.pdsleepcfg0().modify(|_r, w| w.lposc_pd().clear_bit());
+                }
+
+                // Wait for low-power oscillator to be ready (typically 64 us)
+                while self.clkctl0.lposcctl0().read().clkrdy().bit_is_clear() {}
+
+                self.clocks._1m_lposc.powered = Some(level);
+                Ok(self.clocks._1m_lposc.frequency())
             }
-            // Enable low power oscillator
-            self.sysctl0.pdruncfg0_clr().write(|w| w.lposc_pd().clr_pdruncfg0());
-
-            // Wait for low-power oscillator to be ready (typically 64 us)
-            while self.clkctl0.lposcctl0().read().clkrdy().bit_is_clear() {}
-
-            self.clocks._1m_lposc.enabled = true;
+            Some(level) if level.meets_requirement_of(at_level) => Ok(self.clocks._1m_lposc.frequency()),
+            _ => Err(ClockError::bad_config("1m_lposc enabled but not for deep sleep")),
         }
-        Ok(self.clocks._1m_lposc.frequency())
     }
 
     /// ```text
@@ -500,34 +549,50 @@ impl ClockOperator<'_> {
     ///                Enable
     ///            OSC32KHZCTL0[0]
     /// ```
-    fn ensure_32kclk_active(&mut self) -> Result<u32, ClockError> {
-        if !self.clocks._32k_clk.enabled {
-            if !self.config.enable_32k_clk {
-                return Err(ClockError::bad_config("32k_clk required but not enabled"));
+    fn ensure_32kclk_active(&mut self, at_level: &PoweredClock) -> Result<u32, ClockError> {
+        match self.clocks._32k_clk.powered {
+            // Not yet active
+            None => {
+                let Some(level) = self.config.enable_32k_clk else {
+                    return Err(ClockError::bad_config("32k_clk required but not enabled"));
+                };
+
+                // TODO: I don't think the 32k_clk has deep sleep affected power states?
+                if !level.meets_requirement_of(at_level) {
+                    return Err(ClockError::bad_config("32k_clk enabled but not for deep sleep"));
+                }
+                // Enable the RTC peripheral clock
+                self.clkctl1.pscctl2_set().write(|w| w.rtc_lite_clk_set().set_clock());
+                //
+                // /!\ TODO: The original code directly sets RTC peripheral stuff directly in
+                // /!\ the init. We need to decide what to do with this.
+                // /!\
+                // /!\ UPDATE: The actual RTC clock doesn't start ticking unless you power this
+                // /!\ block on, so like it or not we have to poke the RTC here if we want the
+                // /!\ clock to be active for other reasons (like using it as a wake clock!)
+                let rtc = unsafe { pac::Rtc::steal() };
+                // /!\ //
+                // /!\ // Make sure the reset bit is cleared amd RTC OSC is powered up
+                rtc.ctrl()
+                    .modify(|_r, w| w.swreset().not_in_reset().rtc_osc_pd().enable());
+                // /!\ // set initial match value, note that with a 15 bit count-down timer this would
+                // /!\ // typically be 0x8000, but we are "doing some clever things" in time-driver.rs,
+                // /!\ // read more about it in the comments there
+                // /!\ // SAFETY: unsafe needed to write the bits
+                // /!\ rtc.wake().write(|w| unsafe { w.bits(0xA) });
+
+                // Enable 32K OSC
+                self.clkctl0.osc32khzctl0().write(|w| w.ena32khz().set_bit());
+                self.clocks._32k_clk.powered = Some(level);
+
+                // /!\ // enable rtc clk
+                rtc.ctrl().modify(|_, w| w.rtc_en().enable());
+
+                Ok(self.clocks._32k_clk.frequency())
             }
-            // Enable the RTC peripheral clock
-            self.clkctl1.pscctl2_set().write(|w| w.rtc_lite_clk_set().set_clock());
-            //
-            // /!\ TODO: The original code directly sets RTC peripheral stuff directly in
-            // /!\ the init. We need to decide what to do with this.
-            let rtc = unsafe { pac::Rtc::steal() };
-            // /!\ //
-            // /!\ // Make sure the reset bit is cleared amd RTC OSC is powered up
-            rtc.ctrl().modify(|_r, w| w.swreset().not_in_reset().rtc_osc_pd().enable());
-            // /!\ // set initial match value, note that with a 15 bit count-down timer this would
-            // /!\ // typically be 0x8000, but we are "doing some clever things" in time-driver.rs,
-            // /!\ // read more about it in the comments there
-            // /!\ // SAFETY: unsafe needed to write the bits
-            // /!\ rtc.wake().write(|w| unsafe { w.bits(0xA) });
-
-            // Enable 32K OSC
-            self.clkctl0.osc32khzctl0().write(|w| w.ena32khz().set_bit());
-            self.clocks._32k_clk.enabled = true;
-
-            // /!\ // enable rtc clk
-            rtc.ctrl().modify(|_, w| w.rtc_en().enable());
+            Some(level) if level.meets_requirement_of(at_level) => Ok(self.clocks._32k_clk.frequency()),
+            _ => Err(ClockError::bad_config("32k_clk enabled but not for deep sleep")),
         }
-        Ok(self.clocks._32k_clk.frequency())
     }
 
     /// Section 4.2.1: "Set up the Main PLL"
@@ -573,9 +638,9 @@ impl ClockOperator<'_> {
         }
 
         let pll_input_freq = match sel.clock_select {
-            MainPllClockSelect::M16Irc => self.ensure_16mhz_sfro_active()?,
+            MainPllClockSelect::M16Irc => self.ensure_16mhz_sfro_active(&sel.powered)?,
             MainPllClockSelect::ClkIn => self.clocks.ensure_clk_in_active()?,
-            MainPllClockSelect::M4860IrcDiv2 => self.ensure_48_60mhz_ffro_active()?,
+            MainPllClockSelect::M4860IrcDiv2 => self.ensure_48_60mhz_ffro_active(&sel.powered)?,
         };
 
         // Select the clock input we want
@@ -631,14 +696,17 @@ impl ClockOperator<'_> {
     ///                                        MAINCLKSELB[1:0]
     /// ```
     fn setup_main_clock(&mut self) -> Result<(), ClockError> {
+        // TODO: we always need the main_clk to be powered, right?
+        let main_clk_needs = PoweredClock::AlwaysEnabled;
+
         self.clocks.main_clk = match self.config.main_clock_select {
-            MainClockSelect::M4860IrcDiv4 => self.ensure_48_60mhz_ffro_active()? / 4,
+            MainClockSelect::M4860IrcDiv4 => self.ensure_48_60mhz_ffro_active(&main_clk_needs)? / 4,
             MainClockSelect::ClkIn => self.ensure_clk_in_active()?,
-            MainClockSelect::M1Lposc => self.ensure_1mhz_lposc_active()?,
-            MainClockSelect::M4860Irc => self.ensure_48_60mhz_ffro_active()?,
-            MainClockSelect::M16Irc => self.ensure_16mhz_sfro_active()?,
+            MainClockSelect::M1Lposc => self.ensure_1mhz_lposc_active(&main_clk_needs)?,
+            MainClockSelect::M4860Irc => self.ensure_48_60mhz_ffro_active(&main_clk_needs)?,
+            MainClockSelect::M16Irc => self.ensure_16mhz_sfro_active(&main_clk_needs)?,
             MainClockSelect::MainPllClk => self.ensure_main_pll_clk_active()?,
-            MainClockSelect::K32Clk => self.ensure_32kclk_active()?,
+            MainClockSelect::K32Clk => self.ensure_32kclk_active(&main_clk_needs)?,
         };
 
         // Select the main clock
@@ -1027,13 +1095,15 @@ impl ClockOperator<'_> {
     ///                        WAKECLK32KHZSEL[2:0]
     /// ```
     fn setup_32k_wake_clk(&mut self) -> Result<u32, ClockError> {
+        // TODO: wake clock always needs to be running I think?
+        let wake_clock_needs = PoweredClock::AlwaysEnabled;
         let freq = match self.config.k32_wake_clk_select {
             K32WakeClkSelect::Off => 0,
-            K32WakeClkSelect::K32Clk => self.ensure_32kclk_active()?,
+            K32WakeClkSelect::K32Clk => self.ensure_32kclk_active(&wake_clock_needs)?,
             K32WakeClkSelect::K32Lp => {
                 // Interestingly, 1_000_000 / 32 is 31250, NOT 32768. It's
                 // only 4.8% off, though the 1mhz lposc is ALSO +/-10%.
-                self.ensure_1mhz_lposc_active()? / 32
+                self.ensure_1mhz_lposc_active(&wake_clock_needs)? / 32
             }
         };
         self.clkctl0
@@ -1082,9 +1152,13 @@ impl ClockOperator<'_> {
             return Ok(0);
         };
 
+        // TODO: I don't think clock out requires power during deep sleep?
+        // Maybe we make this configurable?
+        let clock_out_needs = PoweredClock::NormalEnabledDeepSleepDisabled;
+
         let mut freq = match self.config.clk_out_select {
             ClockOutSource::M16Irc => {
-                let freq = self.ensure_16mhz_sfro_active()?;
+                let freq = self.ensure_16mhz_sfro_active(&clock_out_needs)?;
                 self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().sfro_clk());
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
                 freq
@@ -1096,13 +1170,13 @@ impl ClockOperator<'_> {
                 freq
             }
             ClockOutSource::M1Lposc => {
-                let freq = self.ensure_1mhz_lposc_active()?;
+                let freq = self.ensure_1mhz_lposc_active(&clock_out_needs)?;
                 self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().lposc());
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
                 freq
             }
             ClockOutSource::M4860Irc => {
-                let freq = self.ensure_48_60mhz_ffro_active()?;
+                let freq = self.ensure_48_60mhz_ffro_active(&clock_out_needs)?;
                 self.clkctl1.clkoutsel0().modify(|_r, w| w.sel().ffro_clk());
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().clkoutsel0_output());
                 freq
@@ -1140,7 +1214,7 @@ impl ClockOperator<'_> {
                 return Err(ClockError::prog_err("audio_pll_clk not implemented"));
             }
             ClockOutSource::K32Clk => {
-                let freq = self.ensure_32kclk_active()?;
+                let freq = self.ensure_32kclk_active(&clock_out_needs)?;
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().rtc_clk_32khz());
                 freq
             }
@@ -1151,15 +1225,13 @@ impl ClockOperator<'_> {
         };
 
         // Halt and reset the div
-        self.clkctl1
-            .clkoutdiv()
-            .modify(|_, w| w.halt().set_bit());
-        self.clkctl1
-            .clkoutdiv()
-            .modify(|_, w| {
-                unsafe { w.div().bits(div.into_bits()); }
-                w.reset().set_bit()
-            });
+        self.clkctl1.clkoutdiv().modify(|_, w| w.halt().set_bit());
+        self.clkctl1.clkoutdiv().modify(|_, w| {
+            unsafe {
+                w.div().bits(div.into_bits());
+            }
+            w.reset().set_bit()
+        });
 
         // Clear halt and reset bits
         self.clkctl1.clkoutdiv().modify(|_, w| {
@@ -1173,13 +1245,13 @@ impl ClockOperator<'_> {
         match clk_out_select {
             ClkOutSelect::ClkOut0_24(pio0_24) => {
                 pio0_24.set_function(Function::F7);
-            },
+            }
             ClkOutSelect::ClkOut1_10(pio1_10) => {
                 pio1_10.set_function(Function::F7);
-            },
+            }
             ClkOutSelect::ClkOut2_29(pio2_29) => {
                 pio2_29.set_function(Function::F5);
-            },
+            }
             ClkOutSelect::None => unreachable!(),
         }
 

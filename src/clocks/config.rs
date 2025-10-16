@@ -10,11 +10,11 @@ use crate::peripherals::{PIO0_24, PIO0_25, PIO1_10, PIO2_15, PIO2_29, PIO2_30};
 #[derive(Clone, Copy, Debug)]
 pub struct ClockConfig {
     /// Clock coming from RTC crystal oscillator
-    pub enable_32k_clk: bool,
+    pub enable_32k_clk: Option<PoweredClock>,
     /// 16MHz clock, generated on-chip, accurate +/- 1%
-    pub enable_16m_irc: bool,
+    pub enable_16m_irc: Option<PoweredClock>,
     /// 1MHz clock, generated on-chip, accurate +/- 10%
-    pub enable_1m_lposc: bool,
+    pub enable_1m_lposc: Option<PoweredClock>,
     /// 48MHz/60MHz clock, generated on-chip, accurate +/- 1%
     pub m4860_irc_select: M4860IrcSelect,
     pub k32_wake_clk_select: K32WakeClkSelect,
@@ -73,6 +73,7 @@ pub struct Div8(pub(super) u8);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MainPll {
+    pub powered: PoweredClock,
     /// Select the used clock input
     pub clock_select: MainPllClockSelect,
     /// Allowed range: 16..=22
@@ -106,6 +107,17 @@ pub struct MainPll {
 //
 // enums
 //
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoweredClock {
+    /// Clock is powered in normal operation mode, but is disabled
+    /// when entering Deep Sleep Mode. It will be re-enabled when
+    /// exiting deep sleep mode.
+    NormalEnabledDeepSleepDisabled,
+    /// Clock is powered in normal operation mode, AND is left
+    /// enabled in Deep Sleep Mode.
+    AlwaysEnabled,
+}
 
 /// ```text
 ///      16m_irc ┌─────┐                          ┌─────┐
@@ -266,11 +278,12 @@ pub enum MainClockSelect {
 /// PDRUNCFG0[15],        └▶│Divide by 2│─┘
 /// PDSLEEPCFG0[15]         └───────────┘
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum M4860IrcSelect {
+    #[default]
     Off,
-    Mhz48,
-    Mhz60,
+    Mhz48(PoweredClock),
+    Mhz60(PoweredClock),
 }
 
 /// ```text
@@ -297,6 +310,17 @@ pub enum K32WakeClkSelect {
 //
 // impls
 //
+
+impl PoweredClock {
+    pub fn meets_requirement_of(&self, other: &Self) -> bool {
+        match (self, other) {
+            (PoweredClock::NormalEnabledDeepSleepDisabled, PoweredClock::AlwaysEnabled) => false,
+            (PoweredClock::NormalEnabledDeepSleepDisabled, PoweredClock::NormalEnabledDeepSleepDisabled) => true,
+            (PoweredClock::AlwaysEnabled, PoweredClock::NormalEnabledDeepSleepDisabled) => true,
+            (PoweredClock::AlwaysEnabled, PoweredClock::AlwaysEnabled) => true,
+        }
+    }
+}
 
 impl Div8 {
     /// Store a "raw" divisor value that will divide the source by
@@ -345,16 +369,17 @@ impl Default for ClockConfig {
         // clocks.
         ClockConfig {
             // Don't assume we have an external 32k clock
-            enable_32k_clk: false,
+            enable_32k_clk: None,
             // Enable 16m osc
-            enable_16m_irc: true,
+            enable_16m_irc: Some(PoweredClock::NormalEnabledDeepSleepDisabled),
             // Enable 1m osc
-            enable_1m_lposc: true,
+            enable_1m_lposc: Some(PoweredClock::AlwaysEnabled),
             // Select high speed option
-            m4860_irc_select: M4860IrcSelect::Mhz60,
+            m4860_irc_select: M4860IrcSelect::Mhz60(PoweredClock::NormalEnabledDeepSleepDisabled),
             // Use the internal osc as the wake clk source
             k32_wake_clk_select: K32WakeClkSelect::K32Lp,
             main_pll: Some(MainPll {
+                powered: PoweredClock::AlwaysEnabled,
                 // Select 48/60 div2, e.g. 30MHz
                 clock_select: MainPllClockSelect::M16Irc,
                 // 30 x 20: 600MHz
@@ -380,13 +405,12 @@ impl Default for ClockConfig {
     }
 }
 
-
 impl M4860IrcSelect {
     pub fn freq(&self) -> Option<u32> {
         match self {
             M4860IrcSelect::Off => None,
-            M4860IrcSelect::Mhz48 => Some(48_000_000),
-            M4860IrcSelect::Mhz60 => Some(60_000_000),
+            M4860IrcSelect::Mhz48(_) => Some(48_000_000),
+            M4860IrcSelect::Mhz60(_) => Some(60_000_000),
         }
     }
 
