@@ -1,8 +1,7 @@
 use core::cell::RefCell;
 
 use config::{
-    ClkInSelect, ClockConfig, ClockOutSource, Div8, K32WakeClkSelect, M4860IrcSelect, MainClockSelect, MainPll,
-    MainPllClockSelect,
+    ClkInSelect, ClkOutSelect, ClockConfig, ClockOutSource, Div8, K32WakeClkSelect, M4860IrcSelect, MainClockSelect, MainPll, MainPllClockSelect
 };
 use critical_section::Mutex;
 use paste::paste;
@@ -11,6 +10,7 @@ use periph_helpers::{
     Sct0Config, WdtConfig,
 };
 
+use crate::gpio::Function;
 use crate::iopctl::IopctlPin;
 use crate::pac;
 
@@ -34,7 +34,11 @@ static CLOCKS: Mutex<RefCell<Option<Clocks>>> = Mutex::new(RefCell::new(None));
 ///
 /// 1. Via the [`with_clocks`] method, which gives read-only access to [`Clocks`]
 /// 2. Individual peripheral source clocks are returned by calls to [`enable_and_reset`]
-pub(crate) fn init(mut config: ClockConfig, clk_in_select: ClkInSelect) -> Result<(), ClockError> {
+pub(crate) fn init(
+    config: ClockConfig,
+    clk_in_select: ClkInSelect,
+    clk_out_select: ClkOutSelect,
+) -> Result<(), ClockError> {
     // TODO: When enabling clocks, wait the appropriate time
     //
     // Ensure we haven't already configured the clocks
@@ -140,7 +144,7 @@ pub(crate) fn init(mut config: ClockConfig, clk_in_select: ClkInSelect) -> Resul
     operator.setup_32k_wake_clk()?;
 
     // Finally, setup clk_out
-    operator.setup_clock_out()?;
+    operator.setup_clock_out(clk_out_select)?;
 
     // Store the configured clocks object statically so we can retrieve it to
     // check coherency later
@@ -371,19 +375,19 @@ impl ClockOperator<'_> {
                 self.clocks.clk_in = Some(freq);
             }
             ClkInSelect::ClkIn0_25 { freq, pin } => {
-                pin.set_function(crate::gpio::Function::F7);
+                pin.set_function(Function::F7);
                 self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().clock_in_clk());
                 self.sysctl0.pdruncfg0().modify(|_r, w| w.sysxtal_pd().power_down());
                 self.clocks.clk_in = Some(freq);
             }
             ClkInSelect::ClkIn2_15 { freq, pin } => {
-                pin.set_function(crate::gpio::Function::F7);
+                pin.set_function(Function::F7);
                 self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().clock_in_clk());
                 self.sysctl0.pdruncfg0().modify(|_r, w| w.sysxtal_pd().power_down());
                 self.clocks.clk_in = Some(freq);
             }
             ClkInSelect::ClkIn2_30 { freq, pin } => {
-                pin.set_function(crate::gpio::Function::F5);
+                pin.set_function(Function::F5);
                 self.clkctl0.sysoscbypass().modify(|_r, w| w.sel().clock_in_clk());
                 self.sysctl0.pdruncfg0().modify(|_r, w| w.sysxtal_pd().power_down());
                 self.clocks.clk_in = Some(freq);
@@ -506,10 +510,10 @@ impl ClockOperator<'_> {
             //
             // /!\ TODO: The original code directly sets RTC peripheral stuff directly in
             // /!\ the init. We need to decide what to do with this.
-            // /!\ let rtc = unsafe { pac::Rtc::steal() };
+            let rtc = unsafe { pac::Rtc::steal() };
             // /!\ //
             // /!\ // Make sure the reset bit is cleared amd RTC OSC is powered up
-            // /!\ rtc.ctrl().modify(|_r, w| w.swreset().not_in_reset().rtc_osc_pd().enable());
+            rtc.ctrl().modify(|_r, w| w.swreset().not_in_reset().rtc_osc_pd().enable());
             // /!\ // set initial match value, note that with a 15 bit count-down timer this would
             // /!\ // typically be 0x8000, but we are "doing some clever things" in time-driver.rs,
             // /!\ // read more about it in the comments there
@@ -521,7 +525,7 @@ impl ClockOperator<'_> {
             self.clocks._32k_clk.enabled = true;
 
             // /!\ // enable rtc clk
-            // /!\ rtc.ctrl().modify(|_, w| w.rtc_en().enable());
+            rtc.ctrl().modify(|_, w| w.rtc_en().enable());
         }
         Ok(self.clocks._32k_clk.frequency())
     }
@@ -1066,7 +1070,12 @@ impl ClockOperator<'_> {
     //                                                  │
     //                                          CLKOUT 1 select
     //                                          CLKOUTSEL1[2:0]
-    pub fn setup_clock_out(&mut self) -> Result<u32, ClockError> {
+    pub fn setup_clock_out(&mut self, clk_out_select: ClkOutSelect) -> Result<u32, ClockError> {
+        if matches!(clk_out_select, ClkOutSelect::None) {
+            self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().none());
+            self.clocks.clk_out = None;
+            return Ok(0);
+        }
         let Some(div) = self.config.clk_out_div else {
             self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().none());
             self.clocks.clk_out = None;
@@ -1141,15 +1150,39 @@ impl ClockOperator<'_> {
             }
         };
 
+        // Halt and reset the div
         self.clkctl1
             .clkoutdiv()
-            .modify(|_, w| w.halt().set_bit().reset().set_bit());
+            .modify(|_, w| w.halt().set_bit());
         self.clkctl1
             .clkoutdiv()
-            .modify(|_, w| unsafe { w.div().bits(div.into_bits()) });
-        self.clkctl1.clkoutdiv().modify(|_, w| w.halt().clear_bit());
+            .modify(|_, w| {
+                unsafe { w.div().bits(div.into_bits()); }
+                w.reset().set_bit()
+            });
+
+        // Clear halt and reset bits
+        self.clkctl1.clkoutdiv().modify(|_, w| {
+            w.halt().clear_bit();
+            w.reset().clear_bit();
+            w
+        });
         while self.clkctl1.clkoutdiv().read().reqflag().bit_is_set() {}
         freq /= div.into_divisor();
+
+        match clk_out_select {
+            ClkOutSelect::ClkOut0_24(pio0_24) => {
+                pio0_24.set_function(Function::F7);
+            },
+            ClkOutSelect::ClkOut1_10(pio1_10) => {
+                pio1_10.set_function(Function::F7);
+            },
+            ClkOutSelect::ClkOut2_29(pio2_29) => {
+                pio2_29.set_function(Function::F5);
+            },
+            ClkOutSelect::None => unreachable!(),
+        }
+
         self.clocks.clk_out = Some(freq);
 
         Ok(freq)

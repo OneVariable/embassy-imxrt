@@ -130,13 +130,15 @@ macro_rules! bind_interrupts {
 
 /// HAL configuration for iMX RT600.
 pub mod config {
-    use crate::clocks::config::ClockConfig;
+    use crate::clocks::config::{ClkInSelect, ClkOutSelect, ClockConfig};
 
     /// HAL configuration passed when initializing.
     #[non_exhaustive]
     pub struct Config {
         /// Clock configuration.
         pub clocks: ClockConfig,
+        pub clock_in_select: ClkInSelect,
+        pub clock_out_select: ClkOutSelect,
         /// Time driver interrupt priority. Should be lower priority than softdevice if used.
         #[cfg(feature = "_time-driver")]
         pub time_interrupt_priority: crate::interrupt::Priority,
@@ -149,6 +151,8 @@ pub mod config {
                 clocks: ClockConfig::default(),
                 #[cfg(feature = "_time-driver")]
                 time_interrupt_priority: crate::interrupt::Priority::P0,
+                clock_in_select: ClkInSelect::default(),
+                clock_out_select: ClkOutSelect::default(),
             }
         }
     }
@@ -160,6 +164,23 @@ pub mod config {
                 clocks,
                 #[cfg(feature = "_time-driver")]
                 time_interrupt_priority: crate::interrupt::Priority::P0,
+                clock_in_select: ClkInSelect::default(),
+                clock_out_select: ClkOutSelect::default(),
+            }
+        }
+
+        /// Create a new configuration with the provided clock config.
+        pub fn new_with_selects(
+            clocks: ClockConfig,
+            clock_in_select: ClkInSelect,
+            clock_out_select: ClkOutSelect,
+        ) -> Self {
+            Self {
+                clocks,
+                #[cfg(feature = "_time-driver")]
+                time_interrupt_priority: crate::interrupt::Priority::P0,
+                clock_in_select,
+                clock_out_select,
             }
         }
     }
@@ -176,7 +197,11 @@ pub fn init(config: config::Config) -> Peripherals {
     let peripherals = Peripherals::take();
 
     unsafe {
-        if let Err(e) = clocks::init(config.clocks, clocks::config::ClkInSelect::default()) {
+        if let Err(e) = clocks::init(
+            config.clocks,
+            config.clock_in_select,
+            config.clock_out_select,
+        ) {
             error!("unable to initialize Clocks for reason: {:?}", e);
             // Panic here?
         }
@@ -189,4 +214,24 @@ pub fn init(config: config::Config) -> Peripherals {
     }
 
     peripherals
+}
+
+/// TODO: a hacky version because we need the pins for clk_in/clk_out
+pub fn init_without_periphs(config: config::Config) {
+    unsafe {
+        if let Err(e) = clocks::init(
+            config.clocks,
+            config.clock_in_select,
+            config.clock_out_select,
+        ) {
+            error!("unable to initialize Clocks for reason: {:?}", e);
+            // Panic here?
+        }
+        #[cfg(feature = "_time-driver")]
+        time_driver::init(config.time_interrupt_priority);
+        flash::init();
+        dma::init();
+        gpio::init();
+        timer::init();
+    }
 }

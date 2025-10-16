@@ -1,4 +1,6 @@
-use crate::peripherals::{PIO0_25, PIO2_15, PIO2_30};
+use embassy_hal_internal::Peri;
+
+use crate::peripherals::{PIO0_24, PIO0_25, PIO1_10, PIO2_15, PIO2_29, PIO2_30};
 
 /// This type represents a divider in the range 1..=256.
 ///
@@ -263,7 +265,7 @@ pub enum MainPllClockSelect {
 ///                Enable & bypass
 ///                SYSOSCCTL0[1:0]
 /// ```
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Debug, Default)]
 pub enum ClkInSelect {
     Xtal {
         freq: u32,
@@ -272,16 +274,25 @@ pub enum ClkInSelect {
     },
     ClkIn0_25 {
         freq: u32,
-        pin: PIO0_25,
+        pin: Peri<'static, PIO0_25>,
     },
     ClkIn2_15 {
         freq: u32,
-        pin: PIO2_15,
+        pin: Peri<'static, PIO2_15>,
     },
     ClkIn2_30 {
         freq: u32,
-        pin: PIO2_30,
+        pin: Peri<'static, PIO2_30>,
     },
+    #[default]
+    None,
+}
+
+#[derive(Debug, Default)]
+pub enum ClkOutSelect {
+    ClkOut0_24(Peri<'static, PIO0_24>),
+    ClkOut1_10(Peri<'static, PIO1_10>),
+    ClkOut2_29(Peri<'static, PIO2_29>),
     #[default]
     None,
 }
