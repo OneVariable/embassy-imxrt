@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use super::{ClockError, Clocks};
+use super::{config::PoweredClock, ClockError, Clocks};
 use crate::pac;
 
 pub trait SPConfHelper {
@@ -228,6 +228,7 @@ pub struct FlexcommConfig {
     pub fc_clk_sel: FlexcommFclkSel,
     pub instance: FlexcommInstance,
     pub mult: u8,
+    pub powered: PoweredClock,
 }
 impl SPConfHelper for FlexcommConfig {
     //                                          16m_clk_irc ┌─────┐
@@ -256,9 +257,9 @@ impl SPConfHelper for FlexcommConfig {
             FlexcommFclkSel::FcnFrgClk => {
                 let freq = match self.frg_clk_sel {
                     FlexcommFrgSel::MainClk => clocks.main_clk,
-                    FlexcommFrgSel::FrgPllClk => clocks.ensure_frg_pll_active()?,
-                    FlexcommFrgSel::SfroClk => clocks.ensure_16mhz_sfro_active()?,
-                    FlexcommFrgSel::FfroClk => clocks.ensure_48_60mhz_ffro_active()?,
+                    FlexcommFrgSel::FrgPllClk => clocks.ensure_frg_pll_active(&self.powered)?,
+                    FlexcommFrgSel::SfroClk => clocks.ensure_16mhz_sfro_active(&self.powered)?,
+                    FlexcommFrgSel::FfroClk => clocks.ensure_48_60mhz_ffro_active(&self.powered)?,
                     FlexcommFrgSel::None => 0,
                 };
                 fcomm
@@ -292,8 +293,8 @@ impl SPConfHelper for FlexcommConfig {
                 let freq = freq / fdiv;
                 freq as u32
             }
-            FlexcommFclkSel::SfroClk => clocks.ensure_16mhz_sfro_active()?,
-            FlexcommFclkSel::FfroClk => clocks.ensure_48_60mhz_ffro_active()?,
+            FlexcommFclkSel::SfroClk => clocks.ensure_16mhz_sfro_active(&self.powered)?,
+            FlexcommFclkSel::FfroClk => clocks.ensure_48_60mhz_ffro_active(&self.powered)?,
             FlexcommFclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
             FlexcommFclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
             FlexcommFclkSel::None => 0,
@@ -309,6 +310,7 @@ pub struct FlexcommConfig14 {
     pub frg_clk_sel: FlexcommFrgSel,
     pub fc_clk_sel: FlexcommFclkSel,
     pub mult: u8,
+    pub powered: PoweredClock,
 }
 impl SPConfHelper for FlexcommConfig14 {
     /// ```rust
@@ -338,9 +340,9 @@ impl SPConfHelper for FlexcommConfig14 {
             FlexcommFclkSel::FcnFrgClk => {
                 let freq = match self.frg_clk_sel {
                     FlexcommFrgSel::MainClk => clocks.main_clk,
-                    FlexcommFrgSel::FrgPllClk => clocks.ensure_frg_pll_active()?,
-                    FlexcommFrgSel::SfroClk => clocks.ensure_16mhz_sfro_active()?,
-                    FlexcommFrgSel::FfroClk => clocks.ensure_48_60mhz_ffro_active()?,
+                    FlexcommFrgSel::FrgPllClk => clocks.ensure_frg_pll_active(&self.powered)?,
+                    FlexcommFrgSel::SfroClk => clocks.ensure_16mhz_sfro_active(&self.powered)?,
+                    FlexcommFrgSel::FfroClk => clocks.ensure_48_60mhz_ffro_active(&self.powered)?,
                     FlexcommFrgSel::None => 0,
                 };
                 clkctl1
@@ -374,8 +376,8 @@ impl SPConfHelper for FlexcommConfig14 {
                 let freq = freq / fdiv;
                 freq as u32
             }
-            FlexcommFclkSel::SfroClk => clocks.ensure_16mhz_sfro_active()?,
-            FlexcommFclkSel::FfroClk => clocks.ensure_48_60mhz_ffro_active()?,
+            FlexcommFclkSel::SfroClk => clocks.ensure_16mhz_sfro_active(&self.powered)?,
+            FlexcommFclkSel::FfroClk => clocks.ensure_48_60mhz_ffro_active(&self.powered)?,
             FlexcommFclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
             FlexcommFclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
             FlexcommFclkSel::None => 0,
@@ -390,6 +392,7 @@ pub struct FlexcommConfig15 {
     pub frg_clk_sel: FlexcommFrgSel,
     pub fc_clk_sel: FlexcommFclkSel,
     pub mult: u8,
+    pub powered: PoweredClock,
 }
 impl SPConfHelper for FlexcommConfig15 {
     /// ```text
@@ -419,9 +422,9 @@ impl SPConfHelper for FlexcommConfig15 {
             FlexcommFclkSel::FcnFrgClk => {
                 let freq = match self.frg_clk_sel {
                     FlexcommFrgSel::MainClk => clocks.main_clk,
-                    FlexcommFrgSel::FrgPllClk => clocks.ensure_frg_pll_active()?,
-                    FlexcommFrgSel::SfroClk => clocks.ensure_16mhz_sfro_active()?,
-                    FlexcommFrgSel::FfroClk => clocks.ensure_48_60mhz_ffro_active()?,
+                    FlexcommFrgSel::FrgPllClk => clocks.ensure_frg_pll_active(&self.powered)?,
+                    FlexcommFrgSel::SfroClk => clocks.ensure_16mhz_sfro_active(&self.powered)?,
+                    FlexcommFrgSel::FfroClk => clocks.ensure_48_60mhz_ffro_active(&self.powered)?,
                     FlexcommFrgSel::None => 0,
                 };
                 clkctl1
@@ -455,8 +458,8 @@ impl SPConfHelper for FlexcommConfig15 {
                 let freq = freq / fdiv;
                 freq as u32
             }
-            FlexcommFclkSel::SfroClk => clocks.ensure_16mhz_sfro_active()?,
-            FlexcommFclkSel::FfroClk => clocks.ensure_48_60mhz_ffro_active()?,
+            FlexcommFclkSel::SfroClk => clocks.ensure_16mhz_sfro_active(&self.powered)?,
+            FlexcommFclkSel::FfroClk => clocks.ensure_48_60mhz_ffro_active(&self.powered)?,
             FlexcommFclkSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
             FlexcommFclkSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
             FlexcommFclkSel::None => 0,
@@ -472,6 +475,7 @@ pub struct AdcConfig {
     pub sel0: AdcSel0,
     pub sel1: AdcSel1,
     pub div: u8,
+    pub powered: PoweredClock,
 }
 impl SPConfHelper for AdcConfig {
     /// ```text
@@ -496,10 +500,10 @@ impl SPConfHelper for AdcConfig {
         let mut freq = match self.sel1 {
             AdcSel1::Adc0fclksel0MuxOut => {
                 let freq = match self.sel0 {
-                    AdcSel0::SfroClk => clocks.ensure_16mhz_sfro_active()?,
-                    AdcSel0::XtalinClk => clocks.ensure_clk_in_active()?,
-                    AdcSel0::Lposc => clocks.ensure_1mhz_lposc_active()?,
-                    AdcSel0::FfroClk => clocks.ensure_48_60mhz_ffro_active()?,
+                    AdcSel0::SfroClk => clocks.ensure_16mhz_sfro_active(&self.powered)?,
+                    AdcSel0::XtalinClk => clocks.ensure_clk_in_active(&self.powered)?,
+                    AdcSel0::Lposc => clocks.ensure_1mhz_lposc_active(&self.powered)?,
+                    AdcSel0::FfroClk => clocks.ensure_48_60mhz_ffro_active(&self.powered)?,
                     AdcSel0::None => 0,
                 };
                 clkctl0
@@ -508,8 +512,8 @@ impl SPConfHelper for AdcConfig {
                 freq
             }
             AdcSel1::Syspll0MainClk => clocks.main_clk,
-            AdcSel1::Syspll0Aux0PllClock => clocks.ensure_aux0_pll_active()?,
-            AdcSel1::Syspll0Aux1PllClock => clocks.ensure_aux1_pll_active()?,
+            AdcSel1::Syspll0Aux0PllClock => clocks.ensure_aux0_pll_clk_active(&self.powered)?,
+            AdcSel1::Syspll0Aux1PllClock => clocks.ensure_aux1_pll_clk_active(&self.powered)?,
             AdcSel1::None => 0,
         };
         // If we don't use select 0 at all, mark it to none.
@@ -561,6 +565,7 @@ pub enum SCTClockSource {
 pub struct Sct0Config {
     pub source: SCTClockSource,
     pub div: u8,
+    pub powered: PoweredClock,
 }
 impl SPConfHelper for Sct0Config {
     /// ```text
@@ -594,25 +599,25 @@ impl SPConfHelper for Sct0Config {
             }
             SCTClockSource::MainPLL => {
                 // main_pll_may not be enabled
-                let freq = clocks.ensure_main_pll_clk_active()?;
+                let freq = clocks.ensure_main_pll_clk_active(&self.powered)?;
                 clkctl0.sctfclksel().write(|w| w.sel().main_sys_pll_clk());
                 freq
             }
             SCTClockSource::Aux0Pll => {
                 // aux0_pll_clk may not be enabled
-                let freq = clocks.ensure_aux0_pll_clk_active()?;
+                let freq = clocks.ensure_aux0_pll_clk_active(&self.powered)?;
                 clkctl0.sctfclksel().write(|w| w.sel().syspll0_aux0_pll_clock());
                 freq
             }
             SCTClockSource::Ffro48_60Mhz => {
                 // FFRO/48_60mhz may not be enabled
-                let freq = clocks.ensure_48_60mhz_ffro_active()?;
+                let freq = clocks.ensure_48_60mhz_ffro_active(&self.powered)?;
                 clkctl0.sctfclksel().write(|w| w.sel().ffro_clk());
                 freq
             }
             SCTClockSource::Aux1Pll => {
                 // aux1_pll_clk may not be enabled
-                let freq = clocks.ensure_aux1_pll_clk_active()?;
+                let freq = clocks.ensure_aux1_pll_clk_active(&self.powered)?;
                 clkctl0.sctfclksel().write(|w| w.sel().syspll0_aux1_pll_clock());
                 freq
             }
@@ -651,6 +656,7 @@ pub enum WdtInstance {
 pub struct WdtConfig {
     pub source: WdtClkSel,
     pub instance: WdtInstance,
+    pub powered: PoweredClock,
 }
 impl SPConfHelper for WdtConfig {
     /// ```text
@@ -666,7 +672,7 @@ impl SPConfHelper for WdtConfig {
     /// ```
     fn post_enable_config(&self, clocks: &Clocks) -> Result<u32, ClockError> {
         let freq = match self.source {
-            WdtClkSel::LpOsc1m => clocks.ensure_1mhz_lposc_active()?,
+            WdtClkSel::LpOsc1m => clocks.ensure_1mhz_lposc_active(&self.powered)?,
             // TODO: Should we allow "None" settings? This seems a little foot-gunny.
             WdtClkSel::None => 0,
         };
@@ -702,6 +708,7 @@ pub enum CTimerInstance {
 pub struct CtimerConfig {
     pub source: CTimerSel,
     pub instance: CTimerInstance,
+    pub powered: PoweredClock,
 }
 impl SPConfHelper for CtimerConfig {
     /// ```text
@@ -727,11 +734,11 @@ impl SPConfHelper for CtimerConfig {
         let clkctl1 = unsafe { pac::Clkctl1::steal() };
         let freq = match self.source {
             CTimerSel::MainClk => clocks.main_clk,
-            CTimerSel::SfroClk => clocks.ensure_16mhz_sfro_active()?,
-            CTimerSel::FfroClk => clocks.ensure_48_60mhz_ffro_active()?,
+            CTimerSel::SfroClk => clocks.ensure_16mhz_sfro_active(&self.powered)?,
+            CTimerSel::FfroClk => clocks.ensure_48_60mhz_ffro_active(&self.powered)?,
             CTimerSel::AudioPllClk => return Err(ClockError::prog_err("not implemented")),
             CTimerSel::MasterClk => return Err(ClockError::prog_err("not implemented")),
-            CTimerSel::Lposc => clocks.ensure_1mhz_lposc_active()?,
+            CTimerSel::Lposc => clocks.ensure_1mhz_lposc_active(&self.powered)?,
             CTimerSel::None => 0,
         };
         clkctl1
@@ -765,6 +772,7 @@ pub enum OsEventClockSelect {
 }
 pub struct OsEventConfig {
     pub select: OsEventClockSelect,
+    pub powered: PoweredClock,
 }
 impl SPConfHelper for OsEventConfig {
     /// ```text
@@ -786,17 +794,17 @@ impl SPConfHelper for OsEventConfig {
         let clkctl1 = unsafe { pac::Clkctl1::steal() };
         let (freq, variant) = match self.select {
             OsEventClockSelect::Lposc => {
-                let freq = clocks.ensure_1mhz_lposc_active()?;
+                let freq = clocks.ensure_1mhz_lposc_active(&self.powered)?;
                 let var = pac::clkctl1::oseventfclksel::Sel::Lposc;
                 (freq, var)
             }
             OsEventClockSelect::Rtc32khzClk => {
-                let freq = clocks.ensure_32k_clk_active()?;
+                let freq = clocks.ensure_32k_clk_active(&self.powered)?;
                 let var = pac::clkctl1::oseventfclksel::Sel::Rtc32khzClk;
                 (freq, var)
             }
             OsEventClockSelect::TealFreeRunningClk => {
-                let freq = clocks.ensure_hclk_active()?;
+                let freq = clocks.sys_cpu_ahb_clk;
                 let var = pac::clkctl1::oseventfclksel::Sel::TealFreeRunningClk;
                 (freq, var)
             }

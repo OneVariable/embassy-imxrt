@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use paste::paste;
 
+use crate::clocks::config::PoweredClock;
 use crate::clocks::periph_helpers::{FlexcommConfig, FlexcommConfig14, FlexcommConfig15, FlexcommInstance};
 use crate::clocks::{
     disable, enable_and_reset,
@@ -65,6 +66,7 @@ impl Clock {
                     fc_clk_sel: fclk_sel,
                     instance,
                     mult: mul,
+                    powered: PoweredClock::NormalEnabledDeepSleepDisabled
                 };
             }
         };
@@ -73,6 +75,7 @@ impl Clock {
             fc_clk_sel: sel,
             instance,
             mult: 0,
+            powered: PoweredClock::NormalEnabledDeepSleepDisabled
         }
     }
 
@@ -88,6 +91,7 @@ impl Clock {
                     frg_clk_sel: frg_sel,
                     fc_clk_sel: fclk_sel,
                     mult: mul,
+                    powered: PoweredClock::NormalEnabledDeepSleepDisabled
                 };
             }
         };
@@ -95,6 +99,7 @@ impl Clock {
             frg_clk_sel: FlexcommFrgSel::None,
             fc_clk_sel: sel,
             mult: 0,
+            powered: PoweredClock::NormalEnabledDeepSleepDisabled
         }
     }
 
@@ -110,6 +115,7 @@ impl Clock {
                     frg_clk_sel: frg_sel,
                     fc_clk_sel: fclk_sel,
                     mult: mul,
+                    powered: PoweredClock::NormalEnabledDeepSleepDisabled
                 };
             }
         };
@@ -117,6 +123,7 @@ impl Clock {
             frg_clk_sel: FlexcommFrgSel::None,
             fc_clk_sel: sel,
             mult: 0,
+            powered: PoweredClock::NormalEnabledDeepSleepDisabled
         }
     }
 }

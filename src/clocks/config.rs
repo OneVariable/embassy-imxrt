@@ -214,7 +214,9 @@ pub enum ClkInSelect {
     Xtal {
         freq: u32,
         bypass: bool,
+        /// If true: "Low Power". If false: "High Gain"
         low_power: bool,
+        powered: PoweredClock,
     },
     ClkIn0_25 {
         freq: u32,

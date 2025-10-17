@@ -10,6 +10,7 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_hal_internal::{impl_peripheral, Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 
+use crate::clocks::config::PoweredClock;
 use crate::clocks::periph_helpers::AdcConfig;
 use crate::clocks::{
     enable_and_reset,
@@ -113,6 +114,7 @@ impl<const N: usize> Adc<'_, N> {
             sel0: AdcSel0::Lposc,
             sel1: AdcSel1::Adc0fclksel0MuxOut,
             div: 0,
+            powered: PoweredClock::NormalEnabledDeepSleepDisabled
         })
         .expect("Adc setup shouldn't fail");
         let sysctl0 = unsafe { crate::pac::Sysctl0::steal() };

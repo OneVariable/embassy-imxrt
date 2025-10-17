@@ -4,6 +4,7 @@ use core::marker::PhantomData;
 
 use embassy_hal_internal::{Peri, PeripheralType};
 
+use crate::clocks::config::PoweredClock;
 use crate::clocks::periph_helpers::{WdtClkSel, WdtConfig, WdtInstance};
 use crate::clocks::{enable_and_reset, SysconPeripheral};
 use crate::peripherals::{WDT0, WDT1};
@@ -47,6 +48,8 @@ impl SealedInstance for crate::peripherals::WDT0 {
         enable_and_reset::<WDT0>(&WdtConfig {
             source: WdtClkSel::LpOsc1m,
             instance: WdtInstance::Wwdt0,
+            // TODO: Always enabled?
+            powered: PoweredClock::AlwaysEnabled,
         })
         .expect("lposc should be active");
 
@@ -69,6 +72,8 @@ impl SealedInstance for crate::peripherals::WDT1 {
         enable_and_reset::<WDT1>(&WdtConfig {
             source: WdtClkSel::LpOsc1m,
             instance: WdtInstance::Wwdt1,
+            // TODO: Always enabled?
+            powered: PoweredClock::AlwaysEnabled,
         })
         .expect("lposc should be active");
     }

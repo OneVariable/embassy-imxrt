@@ -8,6 +8,7 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
 
+use crate::clocks::config::PoweredClock;
 use crate::clocks::periph_helpers::{CTimerInstance, CtimerConfig, NoConfig};
 use crate::clocks::{enable_and_reset, periph_helpers::CTimerSel, ClockError, SysconPeripheral};
 use crate::iopctl::{DriveMode, DriveStrength, Inverter, IopctlPin as Pin, Pull, SlewRate};
@@ -1085,22 +1086,32 @@ fn enable_all() -> core::result::Result<TimerClocks, ClockError> {
     let ctimer0 = enable_and_reset::<peripherals::CTIMER0_COUNT_CHANNEL0>(&CtimerConfig {
         source: CTimerSel::SfroClk,
         instance: CTimerInstance::CTimer0,
+        // TODO: AlwaysEnabled?
+        powered: PoweredClock::AlwaysEnabled,
     })?;
     let ctimer1 = enable_and_reset::<peripherals::CTIMER1_COUNT_CHANNEL0>(&CtimerConfig {
         source: CTimerSel::SfroClk,
         instance: CTimerInstance::CTimer1,
+        // TODO: AlwaysEnabled?
+        powered: PoweredClock::AlwaysEnabled,
     })?;
     let ctimer2 = enable_and_reset::<peripherals::CTIMER2_COUNT_CHANNEL0>(&CtimerConfig {
         source: CTimerSel::SfroClk,
         instance: CTimerInstance::CTimer2,
+        // TODO: AlwaysEnabled?
+        powered: PoweredClock::AlwaysEnabled,
     })?;
     let ctimer3 = enable_and_reset::<peripherals::CTIMER3_COUNT_CHANNEL0>(&CtimerConfig {
         source: CTimerSel::SfroClk,
         instance: CTimerInstance::CTimer3,
+        // TODO: AlwaysEnabled?
+        powered: PoweredClock::AlwaysEnabled,
     })?;
     let ctimer4 = enable_and_reset::<peripherals::CTIMER4_COUNT_CHANNEL0>(&CtimerConfig {
         source: CTimerSel::SfroClk,
         instance: CTimerInstance::CTimer4,
+        // TODO: AlwaysEnabled?
+        powered: PoweredClock::AlwaysEnabled,
     })?;
     enable_and_reset::<peripherals::PIMCTL>(&NoConfig)?;
     Ok(TimerClocks {

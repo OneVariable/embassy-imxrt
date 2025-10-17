@@ -29,6 +29,7 @@
 // The timer is reset by the match register that is configured to set the PWM cycle length.
 // When the timer is reset to zero, all currently HIGH match outputs configured as PWM outputs are cleared
 
+use crate::clocks::config::PoweredClock;
 use crate::clocks::disable;
 use crate::clocks::periph_helpers::SCTClockSource;
 use crate::clocks::periph_helpers::Sct0Config;
@@ -241,6 +242,7 @@ impl<'d, T: sealed::SCTimer> SCTPwm<'d, T> {
             // TODO: if further precision is needed for rates beyond u32::MAX clock_rate to pwm_Rate conversions,
             // we can scale up to 256x to the factor term here.
             div: 0,
+            powered: PoweredClock::NormalEnabledDeepSleepDisabled,
         };
         let clock_rate = Hertz(enable_and_reset::<T>(&config).expect("todo"));
         let requested_pwm_rate: Hertz = period.into();
@@ -280,6 +282,7 @@ impl<T: sealed::SCTimer> Drop for SCTPwm<'_, T> {
         _ = enable_and_reset::<T>(&Sct0Config {
             source: SCTClockSource::None,
             div: 0,
+            powered: PoweredClock::NormalEnabledDeepSleepDisabled,
         });
         disable::<T>();
     }
