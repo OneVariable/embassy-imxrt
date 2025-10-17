@@ -145,7 +145,6 @@ pub(crate) fn init(
     if let Some(level) = operator.config.enable_16m_irc.as_ref() {
         _ = operator.ensure_16mhz_sfro_active(level);
     }
-    _ = operator.ensure_main_pll_clk_active();
     if let Some(level) = operator.config.enable_32k_clk.as_ref() {
         _ = operator.ensure_32kclk_active(level);
     }
@@ -810,7 +809,7 @@ impl ClockOperator<'_> {
             MainClockSelect::M1Lposc => self.ensure_1mhz_lposc_active(&main_clk_needs)?,
             MainClockSelect::M4860Irc => self.ensure_48_60mhz_ffro_active(&main_clk_needs)?,
             MainClockSelect::M16Irc => self.ensure_16mhz_sfro_active(&main_clk_needs)?,
-            MainClockSelect::MainPllClk => self.ensure_main_pll_clk_active()?,
+            MainClockSelect::MainPllClk => self.clocks.ensure_main_pll_clk_active(&main_clk_needs)?,
             MainClockSelect::K32Clk => self.ensure_32kclk_active(&main_clk_needs)?,
         };
 
@@ -1163,16 +1162,6 @@ impl ClockOperator<'_> {
         }
     }
 
-    fn ensure_main_pll_clk_active(&self) -> Result<u32, ClockError> {
-        if let Some(main_pll_state) = self.clocks.main_pll.as_ref() {
-            Ok(main_pll_state.frequency)
-        } else {
-            Err(ClockError::BadConfiguration {
-                reason: "main_pll_clk required but disabled",
-            })
-        }
-    }
-
     /// ```text
     ///               ┌────────────────┐
     /// main_pll_clk  │PLL to Flexcomm │ frg_pll
@@ -1183,23 +1172,23 @@ impl ClockOperator<'_> {
     ///                  FRGPLLCLKDIV
     /// ```
     fn setup_frg_pll_div(&mut self) -> Result<(), ClockError> {
-        let Some(div) = self.config.frg_clk_pll_div else {
+        let Some(cfg) = self.config.frg_clk_pll_div.as_ref() else {
             return Ok(());
         };
 
         // Max output frequency: 280MHz
-        let pll_freq = self.ensure_main_pll_clk_active()?;
-        let after_div = pll_freq / div.into_divisor();
+        let pll_freq = self.clocks.ensure_main_pll_clk_active(&cfg.powered)?;
+        let after_div = pll_freq / cfg.div.into_divisor();
         if after_div > 280_000_000 {
             return Err(ClockError::bad_config("frg_pll exceeds 280MHz"));
         }
 
         // Apply div, if necessary
         let current = Div8::from_raw(self.clkctl1.frgpllclkdiv().read().div().bits());
-        if current != div {
+        if current != cfg.div {
             self.clkctl1
                 .frgpllclkdiv()
-                .modify(|_r, w| unsafe { w.div().bits(div.into_bits()) });
+                .modify(|_r, w| unsafe { w.div().bits(cfg.div.into_bits()) });
             while self.clkctl1.frgpllclkdiv().read().reqflag().bit_is_set() {}
         }
 
@@ -1316,7 +1305,7 @@ impl ClockOperator<'_> {
                 return Err(ClockError::prog_err("dsp_main_clk not implemented"));
             }
             ClockOutSource::MainPllClk => {
-                let freq = self.ensure_main_pll_clk_active()?;
+                let freq = self.clocks.ensure_main_pll_clk_active(&clock_out_needs)?;
                 self.clkctl1.clkoutsel1().modify(|_r, w| w.sel().main_pll_clk());
                 freq
             }

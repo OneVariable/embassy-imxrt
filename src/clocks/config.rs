@@ -23,9 +23,15 @@ pub struct ClockConfig {
     /// Main clock divided by (1 + sys_cpu_ahb_div)
     pub sys_cpu_ahb_div: Div8,
     /// Division of FRGPLLCLKDIV, main_pll_clk divided by (1 + frg_clk_pll_div)
-    pub frg_clk_pll_div: Option<Div8>,
+    pub frg_clk_pll_div: Option<FrgClockConfig>,
     pub clk_out_select: ClockOutSource,
     pub clk_out_div: Option<Div8>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FrgClockConfig {
+    pub div: Div8,
+    pub powered: PoweredClock,
 }
 
 /// This type represents a divider in the range 1..=256.
@@ -400,7 +406,7 @@ impl Default for ClockConfig {
             // HCLK: (300 / (0 + 1)) = 300MHz
             sys_cpu_ahb_div: const { Div8::from_divisor(1).unwrap() },
             // FRG CLK: (300 / (9 + 1)) = 30MHz
-            frg_clk_pll_div: const { Some(Div8::from_divisor(10).unwrap()) },
+            frg_clk_pll_div: const { Some(FrgClockConfig { div: Div8::from_divisor(10).unwrap(), powered: PoweredClock::NormalEnabledDeepSleepDisabled }) },
             clk_out_select: ClockOutSource::None,
             clk_out_div: None,
         }
